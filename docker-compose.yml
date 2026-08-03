@@ -1,0 +1,41 @@
+services:
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+    # Optional: uncomment to use MongoDB Compass from the host
+    # ports:
+    #   - "27017:27017"
+
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    ports:
+      - "2567:2567"
+    environment:
+      PORT: "2567"
+      MONGO_URI: mongodb://mongo:27017/zuma
+      JWT_SECRET: ${JWT_SECRET:-dev-change-me-in-production}
+      CLIENT_ORIGIN: ${CLIENT_ORIGIN:-http://localhost:8080}
+      YANDEX_CLIENT_ID: ${YANDEX_CLIENT_ID:-}
+      YANDEX_CLIENT_SECRET: ${YANDEX_CLIENT_SECRET:-}
+      YANDEX_REDIRECT_URI: ${YANDEX_REDIRECT_URI:-http://localhost:2567/auth/yandex/callback}
+      DEV_AUTH: ${DEV_AUTH:-true}
+    depends_on:
+      - mongo
+    restart: unless-stopped
+
+  client:
+    build:
+      context: .
+      dockerfile: client/Dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      - server
+    restart: unless-stopped
+
+volumes:
+  mongo_data:

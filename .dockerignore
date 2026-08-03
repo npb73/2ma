@@ -1,0 +1,14 @@
+node_modules
+**/node_modules
+dist
+**/dist
+.git
+.env
+*.log
+.DS_Store
+.vite
+coverage
+**/.heapsnapshot
+client/node_modules
+server/node_modules
+shared/dist
