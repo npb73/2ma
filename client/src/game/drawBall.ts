@@ -13,18 +13,22 @@ import greenBall from "../../assets/green_ball.png";
 import blueBall from "../../assets/blue_ball.png";
 import pinkBall from "../../assets/pink_ball.png";
 
-/** Pixel-art skins: nearest-neighbor upscale, never bilinear. */
+import {
+  BALL_FISH,
+  BALL_PIPELINE_KEY,
+  ensureBallPipeline,
+} from "./ballPipeline";
+
+/**
+ * Nearest upscale. 32×N must stay power-of-two for clean GL_REPEAT sampling.
+ * (2 → 64, 4 → 128)
+ */
 const TEX_SCALE = 2;
 
 const BALL_URLS = [redBall, yellowBall, greenBall, blueBall, pinkBall] as const;
 
-interface BallSkin {
-  canvas: HTMLCanvasElement;
-  w: number;
-  h: number;
-}
-
-const skins: BallSkin[] = [];
+/** Baked skin size in pixels (set in prepareBallTextures). */
+let skinSize = 32 * TEX_SCALE;
 
 function hex(color: string): number {
   const c = color.startsWith("#") ? color.slice(1) : color;
@@ -35,10 +39,18 @@ function srcKey(color: SolidColor): string {
   return `ball_src_${color}`;
 }
 
+function gpuKey(color: SolidColor): string {
+  return `ball_gpu_${color}`;
+}
+
 function solidColor(typeId: string): SolidColor | null {
   const t = getBallType(typeId);
   if (!t || t.kind !== "solid") return null;
   return t.colors[0] ?? null;
+}
+
+function quantize(v: number): number {
+  return Math.round(v * 100) / 100;
 }
 
 export function preloadBallTextures(scene: Phaser.Scene): void {
@@ -47,23 +59,32 @@ export function preloadBallTextures(scene: Phaser.Scene): void {
   }
 }
 
-/** Bake ×10 pixel-art skins with smoothing forced off. */
+/** Bake crisp POT skins once; fish-eye + scroll run in the BallFishEye shader. */
 export function prepareBallTextures(scene: Phaser.Scene): void {
-  skins.length = 0;
+  ensureBallPipeline(scene.game);
+
   for (let i = 0; i < BALL_URLS.length; i++) {
+    const color = i as SolidColor;
     const src = scene.textures
-      .get(srcKey(i as SolidColor))
+      .get(srcKey(color))
       .getSourceImage() as CanvasImageSource & {
       width: number;
       height: number;
     };
+
+    const size = src.width * TEX_SCALE;
+    skinSize = size;
     const canvas = document.createElement("canvas");
-    canvas.width = src.width * TEX_SCALE;
-    canvas.height = src.height * TEX_SCALE;
+    canvas.width = size;
+    canvas.height = size;
     const ctx = canvas.getContext("2d")!;
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(src, 0, 0, canvas.width, canvas.height);
-    skins.push({ canvas, w: canvas.width, h: canvas.height });
+    ctx.drawImage(src, 0, 0, size, size);
+
+    const key = gpuKey(color);
+    if (scene.textures.exists(key)) scene.textures.remove(key);
+    const tex = scene.textures.addCanvas(key, canvas);
+    tex?.setFilter(Phaser.Textures.FilterMode.NEAREST);
   }
 }
 
@@ -124,61 +145,27 @@ export function drawBallType(
 }
 
 interface BallSlot {
-  canvas: HTMLCanvasElement;
-  ctx: CanvasRenderingContext2D;
-  texture: Phaser.Textures.CanvasTexture;
   image: Phaser.GameObjects.Image;
-  ox: number;
-  oy: number;
+  /** Scroll in texture pixels (same space as movement). */
+  scrollX: number;
+  scrollY: number;
   x: number;
   y: number;
   radius: number;
   color: SolidColor;
   primed: boolean;
-  dirty: boolean;
 }
 
-function paintSlot(slot: BallSlot): void {
-  const skin = skins[slot.color];
-  if (!skin) return;
-
-  const d = Math.max(1, Math.round(slot.radius * 2));
-  if (slot.canvas.width !== d || slot.canvas.height !== d) {
-    slot.canvas.width = d;
-    slot.canvas.height = d;
-    slot.texture.setSize(d, d);
-  }
-
-  const { ctx, ox, oy } = slot;
-  const r = d / 2;
-  ctx.imageSmoothingEnabled = false;
-  ctx.clearRect(0, 0, d, d);
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(r, r, r, 0, Math.PI * 2);
-  ctx.clip();
-
-  // Quantize to 0.1px — smooth enough, avoids sub-pixel flicker/seams.
-  const tw = skin.w;
-  const th = skin.h;
-  const offX = Math.round((((ox % tw) + tw) % tw) * 100) / 100;
-  const offY = Math.round((((oy % th) + th) % th) * 100) / 100;
-
-  const pattern = ctx.createPattern(skin.canvas, "repeat");
-  if (pattern) {
-    pattern.setTransform(new DOMMatrix().translate(-offX, -offY));
-    ctx.fillStyle = pattern;
-    ctx.fillRect(0, 0, d, d);
-  }
-
-  ctx.restore();
-  slot.texture.refresh();
-  slot.dirty = false;
+function applyPipelineData(slot: BallSlot): void {
+  const d = slot.radius * 2;
+  slot.image.setPipelineData("scrollX", slot.scrollX / skinSize);
+  slot.image.setPipelineData("scrollY", slot.scrollY / skinSize);
+  slot.image.setPipelineData("uvScale", d / skinSize);
+  slot.image.setPipelineData("fish", BALL_FISH);
 }
 
 /**
- * Solid balls: nearest-upscaled seamless texture, scrolled by movement.
- * Avoids Phaser TileSprite (WebGL blurs NPOT / scaled tiles).
+ * Solid balls: Image + fish-eye pipeline (circle discard, UV scroll, sphere warp).
  */
 export class BallPainter {
   private readonly scene: Phaser.Scene;
@@ -186,11 +173,13 @@ export class BallPainter {
   private readonly gfx: Phaser.GameObjects.Graphics;
   private readonly slots = new Map<string, BallSlot>();
   private readonly seen = new Set<string>();
+  private readonly usePipeline: boolean;
 
   constructor(scene: Phaser.Scene, depth: number) {
     this.scene = scene;
     this.depth = depth;
     this.gfx = scene.add.graphics().setDepth(depth);
+    this.usePipeline = ensureBallPipeline(scene.game);
   }
 
   begin(): void {
@@ -208,7 +197,7 @@ export class BallPainter {
   ): void {
     this.seen.add(id);
     const color = solidColor(typeId);
-    if (color === null) {
+    if (color === null || !this.usePipeline) {
       const slot = this.slots.get(id);
       if (slot) slot.image.setVisible(false);
       drawBallType(this.gfx, typeId, x, y, radius, fuse);
@@ -217,76 +206,56 @@ export class BallPainter {
 
     let slot = this.slots.get(id);
     if (!slot) {
-      const d = Math.max(1, Math.round(radius * 2));
-      const canvas = document.createElement("canvas");
-      canvas.width = d;
-      canvas.height = d;
-      const key = `ball_dyn_${this.depth}_${id}`;
-      if (this.scene.textures.exists(key)) {
-        this.scene.textures.remove(key);
-      }
-      const texture = this.scene.textures.addCanvas(key, canvas);
-      if (!texture) return;
-      texture.setFilter(Phaser.Textures.FilterMode.NEAREST);
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
+      const d = Math.max(1, radius * 2);
       const image = this.scene.add
-        .image(x, y, key)
+        .image(x, y, gpuKey(color))
         .setDepth(this.depth)
         .setDisplaySize(d, d);
+      image.setPipeline(BALL_PIPELINE_KEY);
       slot = {
-        canvas,
-        ctx,
-        texture,
         image,
-        ox: 0,
-        oy: 0,
+        scrollX: 0,
+        scrollY: 0,
         x,
         y,
         radius,
         color,
         primed: false,
-        dirty: true,
       };
+      applyPipelineData(slot);
       this.slots.set(id, slot);
     }
 
-    const image = slot.image;
+    const { image } = slot;
     image.setVisible(true);
 
-    if (slot.primed) {
-      const dx = x - slot.x;
-      const dy = y - slot.y;
-      if (dx !== 0 || dy !== 0) {
-        slot.ox -= dx;
-        slot.oy -= dy;
-        slot.dirty = true;
-      }
-    } else {
-      slot.primed = true;
-      slot.dirty = true;
+    if (slot.color !== color) {
+      slot.color = color;
+      image.setTexture(gpuKey(color));
     }
 
-    if (slot.color !== color || slot.radius !== radius) {
-      slot.color = color;
+    if (slot.radius !== radius) {
       slot.radius = radius;
-      slot.dirty = true;
+      image.setDisplaySize(radius * 2, radius * 2);
+    }
+
+    if (slot.primed) {
+      slot.scrollX = quantize(slot.scrollX - (x - slot.x));
+      slot.scrollY = quantize(slot.scrollY - (y - slot.y));
+    } else {
+      slot.primed = true;
     }
 
     slot.x = x;
     slot.y = y;
-    if (slot.dirty) paintSlot(slot);
-
-    const d = Math.max(1, Math.round(radius * 2));
     image.setPosition(x, y);
-    image.setDisplaySize(d, d);
+    applyPipelineData(slot);
   }
 
   end(): void {
     for (const [id, slot] of this.slots) {
       if (this.seen.has(id)) continue;
       slot.image.destroy();
-      this.scene.textures.remove(slot.texture.key);
       this.slots.delete(id);
     }
   }
