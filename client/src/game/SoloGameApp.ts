@@ -18,12 +18,18 @@ import {
 import { DistInterpolator } from "./interpolation";
 import { ProjectilePresenter } from "./projectiles";
 import { SoloSim } from "./SoloSim";
-import { drawBallType } from "./drawBall";
+import {
+  BallPainter,
+  preloadBallTextures,
+  prepareBallTextures,
+} from "./drawBall";
+import {
+  CannonRecoil,
+  MUZZLE_BALL_R,
+  NEXT_BALL_R,
+  drawCannonBody,
+} from "./cannonView";
 import { addMapBackground, drawMapHole, drawMapPath } from "./mapView";
-
-function hex(color: string): number {
-  return Phaser.Display.Color.HexStringToColor(color).color;
-}
 
 export async function startSoloGame(
   root: HTMLElement,
@@ -36,6 +42,7 @@ export async function startSoloGame(
   const cannon = sim.cannon;
   const distInterp = new DistInterpolator();
   const projectiles = new ProjectilePresenter();
+  const cannonRecoil = new CannonRecoil();
 
   const overlay = document.createElement("div");
   overlay.style.cssText = `
@@ -109,21 +116,29 @@ export async function startSoloGame(
     backgroundColor: UI.bg,
     banner: false,
     audio: { noAudio: true },
+    pixelArt: true,
+    antialias: false,
+    roundPixels: true,
     scale: {
       mode: Phaser.Scale.FIT,
       autoCenter: Phaser.Scale.CENTER_BOTH,
     },
     scene: {
+      preload(this: Phaser.Scene) {
+        preloadBallTextures(this);
+      },
       create(this: Phaser.Scene) {
         this.cameras.main.setZoom(worldZoom);
         this.cameras.main.centerOn(WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
 
+        prepareBallTextures(this);
         addMapBackground(this, sim.map);
         drawMapPath(this, sim.map.lanes[0].path);
         drawMapHole(this, sim.map.lanes[0].path);
 
-        const ballGfx = this.add.graphics().setDepth(2);
-        const projGfx = this.add.graphics().setDepth(3);
+        const balls = new BallPainter(this, 2);
+        const projs = new BallPainter(this, 3);
+        const cannonBalls = new BallPainter(this, 4);
         const cannonGfx = this.add.graphics().setDepth(4);
 
         this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
@@ -147,6 +162,7 @@ export async function startSoloGame(
             cannon,
           });
           sim.fire(shotId);
+          cannonRecoil.kick(sim.sessionId);
         });
 
         this.events.on("update", () => {
@@ -277,37 +293,48 @@ export async function startSoloGame(
             stageH: stage.clientHeight,
           });
 
-          ballGfx.clear();
-          projGfx.clear();
+          balls.begin();
+          projs.begin();
+          cannonBalls.begin();
           cannonGfx.clear();
 
-          distInterp.forEach((_id, _seat, typeId, dist, fuse) => {
+          distInterp.forEach((id, _seat, typeId, dist, fuse) => {
             const pos = pointAtPath(pathGeom, dist);
-            drawBallType(ballGfx, typeId, pos.x, pos.y, BALL_RADIUS, fuse);
+            balls.draw(id, typeId, pos.x, pos.y, BALL_RADIUS, fuse);
           });
 
           const aim = localAim ?? me.aim;
           const barrel = ballDisplayColors(me.currentType)[0] ?? UI.cannon;
-          cannonGfx.fillStyle(hex(UI.cannon), 1);
-          cannonGfx.fillCircle(cannon.x, cannon.y, 22);
-          cannonGfx.lineStyle(4, hex(barrel), 1);
-          cannonGfx.lineBetween(
+          const pose = drawCannonBody(
+            cannonGfx,
             cannon.x,
             cannon.y,
-            cannon.x + Math.cos(aim) * 40,
-            cannon.y + Math.sin(aim) * 40,
+            aim,
+            cannonRecoil.offset(sim.sessionId, aim, now),
+            barrel,
           );
-          drawBallType(
-            cannonGfx,
+          cannonBalls.draw(
+            "muzzle",
+            me.currentType,
+            pose.tipX,
+            pose.tipY,
+            MUZZLE_BALL_R,
+          );
+          cannonBalls.draw(
+            "next",
             me.nextType,
-            cannon.x - 28,
-            cannon.y + 28,
-            10,
+            pose.baseX - 28,
+            pose.baseY + 28,
+            NEXT_BALL_R,
           );
 
-          projectiles.forEach((typeId, x, y) => {
-            drawBallType(projGfx, typeId, x, y, BALL_RADIUS - 2);
+          projectiles.forEach((id, typeId, x, y) => {
+            projs.draw(id, typeId, x, y, BALL_RADIUS - 2);
           });
+
+          balls.end();
+          projs.end();
+          cannonBalls.end();
         });
       },
     },

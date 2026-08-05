@@ -134,9 +134,9 @@ export class ProjectilePresenter {
     }
   }
 
-  forEach(fn: (typeId: string, x: number, y: number) => void): void {
+  forEach(fn: (id: string, typeId: string, x: number, y: number) => void): void {
     for (const p of this.items.values()) {
-      fn(p.typeId, p.x, p.y);
+      fn(p.id, p.typeId, p.x, p.y);
     }
   }
 
