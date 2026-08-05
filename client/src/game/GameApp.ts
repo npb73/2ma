@@ -1,21 +1,28 @@
 import {
-  BALL_COLORS,
   BALL_RADIUS,
-  CANNON_A,
-  CANNON_B,
-  CARDS,
-  PATH_A,
-  PATH_B,
   UI,
-  type CardId,
+  ballDisplayColors,
+  expToNextLevel,
+  getRankedMap,
+  mapCannon,
+  mapPath,
   type Point,
 } from "@2ma/shared";
 import Phaser from "phaser";
 import { Client, type Room } from "colyseus.js";
 import type { PlayMode } from "../ui/lobby";
 import type { UserInfo } from "../auth";
+import { mountExpBar, mountLevelUpUi } from "../ui/levelUp";
+import {
+  WORLD_HEIGHT,
+  WORLD_WIDTH,
+  getResolutionPreset,
+  getWorldZoom,
+} from "../settings";
 import { DistInterpolator } from "./interpolation";
 import { ProjectilePresenter } from "./projectiles";
+import { drawBallType } from "./drawBall";
+import { addMapBackground, drawMapHole, drawMapPath } from "./mapView";
 
 const WS_URL =
   (import.meta.env.VITE_WS_URL as string | undefined) ||
@@ -25,13 +32,14 @@ const AIM_SEND_MS = 50;
 interface StartOptions {
   token: string;
   user: UserInfo;
-  mode: PlayMode;
+  mode: Exclude<PlayMode, "solo">;
   code?: string;
 }
 
 interface BallView {
   id: string;
-  color: number;
+  typeId: string;
+  fuse: number;
   dist: number;
 }
 
@@ -41,15 +49,13 @@ interface PlayerView {
   rating: number;
   seat: number;
   aim: number;
-  currentColor: number;
-  nextColor: number;
-  targetMode: number;
+  currentType: string;
+  nextType: string;
   combo: number;
   level: number;
-  pendingCard: string;
-  wildShotsLeft: number;
-  explodeNeighbors: boolean;
-  speedMult: number;
+  exp: number;
+  ballPool: string[];
+  pendingOffer: string[];
   chain: BallView[];
 }
 
@@ -63,7 +69,7 @@ interface GameView {
   projectiles: {
     id: string;
     ownerSessionId: string;
-    color: number;
+    typeId: string;
     x: number;
     y: number;
     vx: number;
@@ -135,45 +141,45 @@ function readState(room: Room): GameView {
 
   const players = new Map<string, PlayerView>();
   s.players.forEach((p, sessionId) => {
-    const chainRaw = asArray<{ id: string; color: number; dist: number }>(p.chain);
-    const chain: BallView[] = new Array(chainRaw.length);
-    for (let i = 0; i < chainRaw.length; i++) {
-      const b = chainRaw[i];
-      chain[i] = { id: b.id, color: b.color, dist: b.dist };
-    }
+    const chainRaw = asArray<{
+      id: string;
+      typeId: string;
+      fuse: number;
+      dist: number;
+    }>(p.chain);
+    const chain: BallView[] = chainRaw.map((b) => ({
+      id: b.id,
+      typeId: String(b.typeId ?? "solid_0"),
+      fuse: Number(b.fuse ?? -1),
+      dist: b.dist,
+    }));
     players.set(sessionId, {
       sessionId,
       displayName: String(p.displayName ?? ""),
       rating: Number(p.rating ?? 0),
       seat: Number(p.seat ?? 0),
       aim: Number(p.aim ?? 0),
-      currentColor: Number(p.currentColor ?? 0),
-      nextColor: Number(p.nextColor ?? 0),
-      targetMode: Number(p.targetMode ?? 0),
+      currentType: String(p.currentType ?? "solid_0"),
+      nextType: String(p.nextType ?? "solid_1"),
       combo: Number(p.combo ?? 0),
       level: Number(p.level ?? 0),
-      pendingCard: String(p.pendingCard ?? ""),
-      wildShotsLeft: Number(p.wildShotsLeft ?? 0),
-      explodeNeighbors: Boolean(p.explodeNeighbors),
-      speedMult: Number(p.speedMult ?? 1),
+      exp: Number(p.exp ?? 0),
+      ballPool: asArray<string>(p.ballPool).map(String),
+      pendingOffer: asArray<string>(p.pendingOffer).map(String),
       chain,
     });
   });
 
   const projectilesRaw = asArray<Record<string, unknown>>(s.projectiles);
-  const projectiles = new Array(projectilesRaw.length);
-  for (let i = 0; i < projectilesRaw.length; i++) {
-    const p = projectilesRaw[i];
-    projectiles[i] = {
-      id: String(p.id),
-      ownerSessionId: String(p.ownerSessionId ?? ""),
-      color: Number(p.color),
-      x: Number(p.x),
-      y: Number(p.y),
-      vx: Number(p.vx),
-      vy: Number(p.vy),
-    };
-  }
+  const projectiles = projectilesRaw.map((p) => ({
+    id: String(p.id),
+    ownerSessionId: String(p.ownerSessionId ?? ""),
+    typeId: String(p.typeId ?? "solid_0"),
+    x: Number(p.x),
+    y: Number(p.y),
+    vx: Number(p.vx),
+    vy: Number(p.vy),
+  }));
 
   return {
     phase: s.phase,
@@ -213,11 +219,11 @@ export async function startGame(
   `;
   const hud = document.createElement("div");
   hud.style.cssText = `position:absolute; left:16px; top:12px; pointer-events:none;`;
-  const cardPanel = document.createElement("div");
-  cardPanel.style.cssText = `
-    position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
-    display:none; pointer-events:auto; background:${UI.bgPanel}; padding:20px 24px;
-    border:1px solid ${UI.secondaryDark}; border-radius:12px; min-width:280px;
+  const levelPanel = document.createElement("div");
+  levelPanel.style.cssText = `
+    position:absolute; inset:0; display:none; pointer-events:none;
+    align-items:center; justify-content:center; z-index:25;
+    background:rgba(3,7,16,.55);
   `;
   const resultPanel = document.createElement("div");
   resultPanel.style.cssText = `
@@ -226,11 +232,8 @@ export async function startGame(
     padding:28px 36px; border-radius:12px; border:1px solid ${UI.secondaryDark};
     z-index:30;
   `;
-  overlay.append(hud, cardPanel, resultPanel);
+  overlay.append(hud, levelPanel, resultPanel);
 
-  // Letterbox shell: host fills the window; stage stays 16:9 and is centered
-  // (pillarbox on tall/narrow screens, letterbox on wide ones). HUD overlay
-  // lives on the stage so it stays glued to the playfield.
   const host = document.createElement("div");
   host.style.cssText = `
     width:100%;height:100%;position:relative;overflow:hidden;
@@ -250,6 +253,8 @@ export async function startGame(
   stage.append(canvasMount, overlay);
   host.append(stage);
   root.append(host);
+
+  const expBar = mountExpBar(stage);
 
   const client = new Client(WS_URL);
   let room: Room;
@@ -286,7 +291,8 @@ export async function startGame(
     });
   }
 
-  let lastPending = "";
+  let lastOfferKey = "";
+  let disposeLevelUi: (() => void) | null = null;
   let lastHudKey = "";
   let resultShownFor = "";
   let lastAimSent = 0;
@@ -296,10 +302,16 @@ export async function startGame(
   const distInterp = new DistInterpolator();
   const projectiles = new ProjectilePresenter();
   let lastFrameMs = performance.now();
+  const map = getRankedMap();
+  const pathA = mapPath(map, 0);
+  const pathB = mapPath(map, 1);
+  const cannonA = mapCannon(map, 0);
+  const cannonB = mapCannon(map, 1);
 
   const returnToLobby = async (): Promise<void> => {
     if (leaving) return;
     leaving = true;
+    disposeLevelUi?.();
     await cleanupMatch(room, game);
     location.reload();
   };
@@ -309,14 +321,17 @@ export async function startGame(
       | { seat?: number }
       | undefined;
     if (!me) return null;
-    const cannon = Number(me.seat) === 0 ? CANNON_A : CANNON_B;
+    const cannon = Number(me.seat) === 0 ? cannonA : cannonB;
     return Math.atan2(pointer.worldY - cannon.y, pointer.worldX - cannon.x);
   };
 
+  const renderPreset = getResolutionPreset();
+  const worldZoom = getWorldZoom(renderPreset.id);
+
   game = new Phaser.Game({
     type: Phaser.AUTO,
-    width: 1280,
-    height: 720,
+    width: renderPreset.width,
+    height: renderPreset.height,
     parent: canvasMount,
     backgroundColor: UI.bg,
     banner: false,
@@ -327,25 +342,14 @@ export async function startGame(
     },
     scene: {
       create(this: Phaser.Scene) {
-        this.add
-          .rectangle(640, 360, 1280, 720, hex(UI.bg))
-          .setDepth(-2);
+        this.cameras.main.setZoom(worldZoom);
+        this.cameras.main.centerOn(WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
 
-        drawPath(this, PATH_A);
-        drawPath(this, PATH_B);
-
-        this.add.circle(
-          PATH_A[PATH_A.length - 1].x,
-          PATH_A[PATH_A.length - 1].y,
-          18,
-          hex(UI.hole),
-        );
-        this.add.circle(
-          PATH_B[PATH_B.length - 1].x,
-          PATH_B[PATH_B.length - 1].y,
-          18,
-          hex(UI.hole),
-        );
+        addMapBackground(this, map);
+        drawMapPath(this, pathA);
+        drawMapPath(this, pathB);
+        drawMapHole(this, pathA);
+        drawMapHole(this, pathB);
 
         const ballGfx = this.add.graphics().setDepth(2);
         const projGfx = this.add.graphics().setDepth(3);
@@ -355,7 +359,6 @@ export async function startGame(
           if (leaving || room.state.phase !== "playing") return;
           const angle = aimFromPointer(pointer);
           if (angle === null) return;
-          // Draw immediately; server still owns authoritative aim for shots.
           localAim = angle;
           const now = performance.now();
           if (now - lastAimSent < AIM_SEND_MS) return;
@@ -366,27 +369,18 @@ export async function startGame(
         this.input.on("pointerdown", () => {
           if (leaving || room.state.phase !== "playing") return;
           const me = readState(room).players.get(room.sessionId);
-          if (!me || me.pendingCard) return;
+          if (!me || me.pendingOffer.length > 0) return;
           const aim = localAim ?? me.aim;
-          // Flush aim so server shot matches the barrel the player sees.
           room.send("aim", { angle: aim });
           lastAimSent = performance.now();
-          // Visual flight is 100% client-side; server still resolves the hit.
+          const cannon = me.seat === 0 ? cannonA : cannonB;
           const shotId = projectiles.spawnLocal({
             ownerSessionId: room.sessionId,
-            seat: me.seat,
             aim,
-            color: me.currentColor,
+            typeId: me.currentType,
+            cannon,
           });
           room.send("fire", { shotId });
-        });
-
-        this.input.keyboard?.on("keydown-TAB", (e: KeyboardEvent) => {
-          e.preventDefault();
-          if (leaving || room.state.phase !== "playing") return;
-          const me = readState(room).players.get(room.sessionId);
-          if (!me) return;
-          room.send("setTarget", { mode: me.targetMode === 0 ? 1 : 0 });
         });
 
         this.events.on("update", () => {
@@ -396,13 +390,15 @@ export async function startGame(
           lastFrameMs = now;
 
           const view = readState(room);
+          const me = view.players.get(room.sessionId);
 
           const samples = [];
           for (const p of view.players.values()) {
             for (const b of p.chain) {
               samples.push({
                 id: b.id,
-                color: b.color,
+                typeId: b.typeId,
+                fuse: b.fuse,
                 dist: b.dist,
                 seat: p.seat,
               });
@@ -411,11 +407,17 @@ export async function startGame(
           distInterp.sync(samples);
           distInterp.step(dtMs);
 
-          const ballPositions: Point[] = [];
-          distInterp.forEach((_id, seat, color, dist) => {
-            void color;
-            const path = seat === 0 ? PATH_A : PATH_B;
-            ballPositions.push(pointAt(path, dist));
+          const ballsByOwner = new Map<string, Point[]>();
+          for (const p of view.players.values()) {
+            ballsByOwner.set(p.sessionId, []);
+          }
+          distInterp.forEach((_id, seat, _typeId, dist) => {
+            const path = seat === 0 ? pathA : pathB;
+            for (const p of view.players.values()) {
+              if (p.seat !== seat) continue;
+              ballsByOwner.get(p.sessionId)?.push(pointAt(path, dist));
+              break;
+            }
           });
 
           projectiles.syncServer(
@@ -423,14 +425,39 @@ export async function startGame(
             room.sessionId,
             view.resolvedShotIds,
           );
-          projectiles.step(dtMs / 1000, ballPositions);
+          projectiles.step(dtMs / 1000, ballsByOwner);
 
           renderHud(hud, view, room.sessionId, lastHudKey, (key) => {
             lastHudKey = key;
           });
-          renderCards(cardPanel, view, room, lastPending, (id) => {
-            lastPending = id;
-          });
+
+          const offerKey = me
+            ? `${me.pendingOffer.join(",")}|${me.ballPool.join(",")}`
+            : "";
+          if (me && me.pendingOffer.length > 0) {
+            if (offerKey !== lastOfferKey) {
+              lastOfferKey = offerKey;
+              disposeLevelUi?.();
+              levelPanel.style.display = "flex";
+              disposeLevelUi = mountLevelUpUi(levelPanel, {
+                pool: me.ballPool,
+                offer: me.pendingOffer,
+                onPick: (typeId) => {
+                  room.send("pickBall", { typeId });
+                  disposeLevelUi?.();
+                  disposeLevelUi = null;
+                  lastOfferKey = "";
+                  levelPanel.style.display = "none";
+                },
+              });
+            }
+          } else if (lastOfferKey) {
+            disposeLevelUi?.();
+            disposeLevelUi = null;
+            lastOfferKey = "";
+            levelPanel.style.display = "none";
+          }
+
           renderResult(
             resultPanel,
             view,
@@ -442,48 +469,55 @@ export async function startGame(
             returnToLobby,
           );
 
+          if (me) {
+            const cannon = me.seat === 0 ? cannonA : cannonB;
+            expBar.update({
+              level: me.level,
+              exp: me.exp,
+              need: expToNextLevel(me.level),
+              cannonX: cannon.x,
+              cannonY: cannon.y,
+              stageW: stage.clientWidth,
+              stageH: stage.clientHeight,
+            });
+          }
+
           ballGfx.clear();
           projGfx.clear();
           cannonGfx.clear();
 
-          distInterp.forEach((_id, seat, color, dist) => {
-            const path = seat === 0 ? PATH_A : PATH_B;
+          distInterp.forEach((_id, seat, typeId, dist, fuse) => {
+            const path = seat === 0 ? pathA : pathB;
             const pos = pointAt(path, dist);
-            ballGfx.fillStyle(hex(BALL_COLORS[color] ?? BALL_COLORS[0]), 1);
-            ballGfx.fillCircle(pos.x, pos.y, BALL_RADIUS);
+            drawBallType(ballGfx, typeId, pos.x, pos.y, BALL_RADIUS, fuse);
           });
 
           for (const p of view.players.values()) {
-            const cannon = p.seat === 0 ? CANNON_A : CANNON_B;
+            const cannon = p.seat === 0 ? cannonA : cannonB;
             const isMe = p.sessionId === room.sessionId;
-            const aim =
-              isMe && localAim !== null
-                ? localAim
-                : p.aim;
+            const aim = isMe && localAim !== null ? localAim : p.aim;
+            const barrel = ballDisplayColors(p.currentType)[0] ?? UI.cannon;
 
             cannonGfx.fillStyle(hex(UI.cannon), 1);
             cannonGfx.fillCircle(cannon.x, cannon.y, 22);
-            cannonGfx.lineStyle(
-              4,
-              hex(BALL_COLORS[p.currentColor] ?? BALL_COLORS[0]),
-              1,
-            );
+            cannonGfx.lineStyle(4, hex(barrel), 1);
             cannonGfx.lineBetween(
               cannon.x,
               cannon.y,
               cannon.x + Math.cos(aim) * 40,
               cannon.y + Math.sin(aim) * 40,
             );
-            cannonGfx.fillStyle(
-              hex(BALL_COLORS[p.nextColor] ?? BALL_COLORS[0]),
-              1,
+            drawBallType(
+              cannonGfx,
+              p.nextType,
+              cannon.x - 28,
+              cannon.y + 28,
+              10,
             );
-            cannonGfx.fillCircle(cannon.x - 28, cannon.y + 28, 10);
           }
 
-          projectiles.forEach((color, x, y) => {
-            projGfx.fillStyle(hex(BALL_COLORS[color] ?? BALL_COLORS[0]), 1);
-            projGfx.fillCircle(x, y, BALL_RADIUS - 2);
+          projectiles.forEach((typeId, x, y) => {
+            drawBallType(projGfx, typeId, x, y, BALL_RADIUS - 2);
           });
         });
       },
@@ -495,15 +529,6 @@ export async function startGame(
       game.destroy(true);
     }
   });
-}
-
-function drawPath(scene: Phaser.Scene, points: Point[]): void {
-  const g = scene.add.graphics().setDepth(0);
-  g.lineStyle(10, hex(UI.path), 1);
-  g.beginPath();
-  g.moveTo(points[0].x, points[0].y);
-  for (let i = 1; i < points.length; i++) g.lineTo(points[i].x, points[i].y);
-  g.strokePath();
 }
 
 function renderHud(
@@ -523,16 +548,14 @@ function renderHud(
       break;
     }
   }
-  const target = me?.targetMode === 1 ? "чужая цепочка" : "своя цепочка";
   const key = [
     view.phase,
     view.roomCode,
     me?.rating,
     me?.combo,
     me?.level,
-    me?.targetMode,
-    me?.wildShotsLeft,
-    me?.explodeNeighbors ? 1 : 0,
+    me?.exp,
+    me?.ballPool.length,
     oppName,
     oppRating,
   ].join("|");
@@ -541,45 +564,12 @@ function renderHud(
 
   hud.innerHTML = `
     <div style="font-size:14px;line-height:1.5;background:rgba(4,21,40,.72);padding:10px 14px;border-radius:8px;display:inline-block">
-      <div>Код комнаты: <b style="color:${UI.accentHot}">${view.roomCode || "—"}</b> · ${view.phase}</div>
+      <div>Код комнаты: <b style="color:${UI.accentHot}">${view.roomCode || "—"}</b> · ${view.phase} · ${getRankedMap().name}</div>
       <div>Вы: ${me?.displayName ?? "—"} ★${me?.rating ?? "—"} · комбо ${me?.combo ?? 0} · ур. ${me?.level ?? 0}</div>
       <div>Соперник: ${oppName} ★${oppRating}</div>
-      <div style="color:${UI.secondary}">Цель: ${target} (Tab) · ЛКМ выстрел</div>
-      <div style="color:${UI.secondary}">Эффекты: wild ${me?.wildShotsLeft ?? 0} · взрыв ${me?.explodeNeighbors ? "on" : "off"}</div>
+      <div style="color:${UI.secondary}">ЛКМ — выстрел · пулл ${me?.ballPool.length ?? 0} шаров</div>
     </div>
   `;
-}
-
-function renderCards(
-  panel: HTMLElement,
-  view: GameView,
-  room: Room,
-  lastPending: string,
-  setLast: (id: string) => void,
-): void {
-  const me = view.players.get(room.sessionId);
-  const pending = me?.pendingCard ?? "";
-  if (!pending) {
-    if (panel.style.display !== "none") panel.style.display = "none";
-    if (lastPending) setLast("");
-    return;
-  }
-  if (pending === lastPending && panel.style.display === "block") return;
-  setLast(pending);
-  const def = CARDS.find((c) => c.id === pending);
-  panel.style.display = "block";
-  panel.innerHTML = `
-    <div style="color:${UI.accentHot};font-size:13px;margin-bottom:6px">Новый уровень</div>
-    <div style="font-size:20px;margin-bottom:8px">${def?.title ?? pending}</div>
-    <div style="color:${UI.textMuted};font-size:14px;margin-bottom:16px">${def?.description ?? ""}</div>
-    <button type="button" id="pick-card" style="padding:10px 16px;border:none;border-radius:8px;background:${UI.accent};color:${UI.bg};font-weight:700;cursor:pointer">Взять карту</button>
-  `;
-  panel.querySelector("#pick-card")?.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    room.send("pickCard", { cardId: pending as CardId });
-    panel.style.display = "none";
-  });
 }
 
 function renderResult(

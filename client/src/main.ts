@@ -2,8 +2,9 @@ import { UI } from "@2ma/shared";
 import { getTokenFromUrl, loadSession, saveSession, clearSession } from "./auth";
 import { createLobbyUi } from "./ui/lobby";
 import { startGame } from "./game/GameApp";
+import { startSoloGame } from "./game/SoloGameApp";
 
-async function boot(): Promise<void> {
+async function showLobby(): Promise<void> {
   const root = document.getElementById("app");
   if (!root) return;
 
@@ -24,7 +25,12 @@ async function boot(): Promise<void> {
       });
       if (!me.ok) throw new Error("bad token");
       const data = (await me.json()) as {
-        user: { id: string; displayName: string; rating: number; avatarUrl?: string };
+        user: {
+          id: string;
+          displayName: string;
+          rating: number;
+          avatarUrl?: string;
+        };
       };
       session = { token: session.token, user: data.user };
       saveSession(session.token, data.user);
@@ -34,11 +40,16 @@ async function boot(): Promise<void> {
     }
   }
 
-  const statusRes = await fetch("/auth/status");
-  const status = (await statusRes.json()) as {
-    yandexEnabled: boolean;
-    devAuth: boolean;
-  };
+  let status = { yandexEnabled: false, devAuth: false };
+  try {
+    const statusRes = await fetch("/auth/status");
+    status = (await statusRes.json()) as {
+      yandexEnabled: boolean;
+      devAuth: boolean;
+    };
+  } catch {
+    // Offline / server down — solo still works; matchmaking needs auth status later.
+  }
 
   createLobbyUi(root, {
     session,
@@ -48,6 +59,15 @@ async function boot(): Promise<void> {
       location.reload();
     },
     onPlay: async (mode, code) => {
+      if (mode === "solo") {
+        await startSoloGame(root, {
+          displayName: session?.user?.displayName ?? "Игрок",
+          onExit: () => {
+            void showLobby();
+          },
+        });
+        return;
+      }
       if (!session?.token) return;
       await startGame(root, {
         token: session.token,
@@ -59,7 +79,7 @@ async function boot(): Promise<void> {
   });
 }
 
-boot().catch((err) => {
+showLobby().catch((err) => {
   console.error(err);
   document.body.innerHTML = `<pre style="color:#ff6157;padding:24px">${String(err)}</pre>`;
 });

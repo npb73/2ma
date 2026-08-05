@@ -2,13 +2,15 @@
 
 export interface BallSample {
   id: string;
-  color: number;
+  typeId: string;
+  fuse: number;
   dist: number;
   seat: number;
 }
 
 interface BallTrack {
-  color: number;
+  typeId: string;
+  fuse: number;
   seat: number;
   from: number;
   to: number;
@@ -16,9 +18,7 @@ interface BallTrack {
   t: number;
 }
 
-/** If server jumps farther than this, snap (insert / clear / segment merge). */
 const SNAP_THRESHOLD = 56;
-/** Blend window; ~1 server tick at 20 Hz. */
 export const DIST_INTERP_MS = 55;
 
 export class DistInterpolator {
@@ -31,7 +31,8 @@ export class DistInterpolator {
       const prev = this.tracks.get(sample.id);
       if (!prev) {
         this.tracks.set(sample.id, {
-          color: sample.color,
+          typeId: sample.typeId,
+          fuse: sample.fuse,
           seat: sample.seat,
           from: sample.dist,
           to: sample.dist,
@@ -41,7 +42,8 @@ export class DistInterpolator {
         continue;
       }
 
-      prev.color = sample.color;
+      prev.typeId = sample.typeId;
+      prev.fuse = sample.fuse;
       prev.seat = sample.seat;
 
       const delta = Math.abs(sample.dist - prev.render);
@@ -76,10 +78,16 @@ export class DistInterpolator {
   }
 
   forEach(
-    fn: (id: string, seat: number, color: number, dist: number) => void,
+    fn: (
+      id: string,
+      seat: number,
+      typeId: string,
+      dist: number,
+      fuse: number,
+    ) => void,
   ): void {
     for (const [id, track] of this.tracks) {
-      fn(id, track.seat, track.color, track.render);
+      fn(id, track.seat, track.typeId, track.render, track.fuse);
     }
   }
 }

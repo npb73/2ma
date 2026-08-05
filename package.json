@@ -4,12 +4,14 @@
   "workspaces": [
     "server",
     "client",
-    "shared"
+    "shared",
+    "map-editor"
   ],
   "scripts": {
     "dev": "npm run dev -w server & npm run dev -w client",
     "dev:server": "npm run dev -w server",
     "dev:client": "npm run dev -w client",
+    "dev:map-editor": "npm run dev -w @2ma/map-editor",
     "build": "npm run build -w shared && npm run build -w server && npm run build -w client",
     "up": "docker compose up --build -d",
     "down": "docker compose down",

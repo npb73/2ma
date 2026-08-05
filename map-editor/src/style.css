@@ -1,0 +1,156 @@
+:root {
+  color-scheme: dark;
+  --bg: #030710;
+  --panel: #041528;
+  --text: #ffffe4;
+  --muted: #ffdaac;
+  --accent: #ff6157;
+  --secondary: #6d8a8d;
+  --path: #273b2d;
+  --hole: #890027;
+  --cannon: #bfc3c6;
+  --lane-a: #1c92a7;
+  --lane-b: #ff823b;
+  --border: #293b49;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 100vh;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  padding: 12px 16px;
+  background: linear-gradient(180deg, #041528 0%, #030710 100%);
+  border-bottom: 1px solid var(--border);
+}
+
+.toolbar h1 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  margin-right: 8px;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.field input[type="text"] {
+  width: 160px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #030710;
+  color: var(--text);
+}
+
+.field select {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #030710;
+  color: var(--text);
+}
+
+.btn {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.btn:hover {
+  border-color: var(--secondary);
+}
+
+.btn-accent {
+  background: #7c191a;
+  border-color: var(--accent);
+}
+
+.btn-accent:hover {
+  background: #890027;
+}
+
+.btn.active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.hint {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--secondary);
+  max-width: 420px;
+  text-align: right;
+}
+
+.status {
+  font-size: 0.8rem;
+  color: var(--muted);
+  min-height: 1.2em;
+}
+
+.status.error {
+  color: var(--accent);
+}
+
+.stage-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  overflow: auto;
+  background:
+    radial-gradient(ellipse at 30% 20%, #041528 0%, transparent 55%),
+    radial-gradient(ellipse at 80% 80%, #310c1b44 0%, transparent 50%),
+    var(--bg);
+}
+
+.stage {
+  position: relative;
+  box-shadow: 0 0 0 1px var(--border), 0 12px 40px #0008;
+  line-height: 0;
+}
+
+.stage canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.hidden-file {
+  display: none;
+}

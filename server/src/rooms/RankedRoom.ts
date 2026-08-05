@@ -61,13 +61,9 @@ export class RankedRoom extends Room<RankedState> {
       this.sim.fire(client.sessionId, message?.shotId);
     });
 
-    this.onMessage("setTarget", (client, message: { mode?: number }) => {
-      this.sim.setTarget(client.sessionId, Number(message?.mode) === 1 ? 1 : 0);
-    });
-
-    this.onMessage("pickCard", (client, message: { cardId?: string }) => {
-      if (typeof message?.cardId === "string") {
-        this.sim.pickCard(client.sessionId, message.cardId);
+    this.onMessage("pickBall", (client, message: { typeId?: string }) => {
+      if (typeof message?.typeId === "string") {
+        this.sim.pickBall(client.sessionId, message.typeId);
       }
     });
 

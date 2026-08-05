@@ -50,16 +50,26 @@ export const UI = {
   cannon: "#bfc3c6" as PaletteColor,
 } as const;
 
-/** Ball color ids 0–4 mapped into the closed palette. */
-export const BALL_COLORS = [
-  "#d9243c",
-  "#ffd832",
-  "#458239",
-  "#1c92a7",
-  "#c03b94",
-] as const;
-
-export const COLOR_COUNT = BALL_COLORS.length;
+export {
+  BALL_COLORS,
+  COLOR_COUNT,
+  BOMB_FUSE_SEC,
+  BOMB_BLAST_RADIUS,
+  BALL_TYPES,
+  getBallType,
+  isBallTypeId,
+  initialBallPool,
+  matchColors,
+  typesMatch,
+  expandMatchGroup,
+  pickFromPool,
+  rollLevelOffer,
+  ballDisplayColors,
+  solidTypeId,
+  type SolidColor,
+  type BallKind,
+  type BallTypeDef,
+} from "./balls.js";
 
 export const RATING_DELTA = 30;
 export const STARTING_RATING = 1000;
@@ -74,75 +84,72 @@ export const ROLLBACK_PAUSE_SEC = 1;
 /** Time to ease from 0 → ROLLBACK_SPEED after the pause. */
 export const ROLLBACK_RAMP_SEC = 0.65;
 export const PROJECTILE_SPEED = 620;
-export const COMBO_PER_LEVEL = 3;
+/** Balls cleared required to go from level 0 → 1. */
+export const BASE_LEVEL_EXP = 10;
+/** Each next level needs +10% more cleared balls than the previous. */
+export const LEVEL_EXP_GROWTH = 1.1;
 export const INITIAL_CHAIN = 18;
 export const MAX_CHAIN = 55;
 /** Spacing slack before two balls count as separate segments. */
 export const GAP_EPS = 2;
 
-export type CardId = "wild10" | "speedOpponent" | "explodeNeighbors";
-
-export interface CardDef {
-  id: CardId;
-  title: string;
-  description: string;
+/** Exp (cleared balls) needed to advance from `level` to `level + 1`. */
+export function expToNextLevel(level: number): number {
+  const lv = Math.max(0, Math.floor(level));
+  return Math.max(1, Math.ceil(BASE_LEVEL_EXP * LEVEL_EXP_GROWTH ** lv));
 }
 
-export const CARDS: CardDef[] = [
-  {
-    id: "wild10",
-    title: "Хамелеон",
-    description: "Следующие 10 шаров подходят к любым цветам",
-  },
-  {
-    id: "speedOpponent",
-    title: "Ускорение",
-    description: "Скорость шаров соперника +50% на 10 секунд",
-  },
-  {
-    id: "explodeNeighbors",
-    title: "Взрыв",
-    description: "Ваши шары взрывают соседей слева и справа",
-  },
-];
+export type { Point } from "./map.js";
 
-export type Point = { x: number; y: number };
+export {
+  WORLD_WIDTH,
+  WORLD_HEIGHT,
+  PATH_A,
+  PATH_B,
+  CANNON_A,
+  CANNON_B,
+  createDefaultMap,
+  validateMap,
+  parseGameMap,
+  isPoint,
+  isMapLane,
+  type MapLane,
+  type GameMap,
+} from "./map.js";
 
-/** Simple mirrored paths on one field (1280×720). */
-export const PATH_A: Point[] = [
-  { x: 80, y: 120 },
-  { x: 220, y: 100 },
-  { x: 380, y: 140 },
-  { x: 480, y: 220 },
-  { x: 520, y: 340 },
-  { x: 480, y: 460 },
-  { x: 360, y: 540 },
-  { x: 200, y: 560 },
-  { x: 120, y: 480 },
-];
+export {
+  SOLO_CLASSIC,
+  RANKED_CLASSIC,
+  MAP_CATALOG,
+  DEFAULT_SOLO_MAP_ID,
+  DEFAULT_RANKED_MAP_ID,
+  getMap,
+  getSoloMap,
+  getRankedMap,
+  mapLane,
+  mapPath,
+  mapCannon,
+  listMaps,
+} from "./maps/index.js";
 
-export const PATH_B: Point[] = [
-  { x: 1200, y: 120 },
-  { x: 1060, y: 100 },
-  { x: 900, y: 140 },
-  { x: 800, y: 220 },
-  { x: 760, y: 340 },
-  { x: 800, y: 460 },
-  { x: 920, y: 540 },
-  { x: 1080, y: 560 },
-  { x: 1160, y: 480 },
-];
+export {
+  buildPath,
+  pointAtPath,
+  type PathGeom,
+  type PathPoint,
+} from "./path.js";
 
-export const CANNON_A: Point = { x: 280, y: 360 };
-export const CANNON_B: Point = { x: 1000, y: 360 };
+export {
+  mulberry32,
+  createColorStream,
+  randomSeed,
+} from "./rng.js";
 
 export type RoomPhase = "lobby" | "playing" | "ended";
-export type TargetMode = 0 | 1; // 0 = own chain, 1 = opponent
 
 export const MESSAGES = {
   aim: "aim",
   fire: "fire",
-  setTarget: "setTarget",
-  pickCard: "pickCard",
+  pickBall: "pickBall",
   ready: "ready",
 } as const;

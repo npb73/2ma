@@ -12,7 +12,7 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && mkdir -p dist/maps && cp src/maps/*.json dist/maps/",
     "dev": "tsc --watch"
   },
   "devDependencies": {
