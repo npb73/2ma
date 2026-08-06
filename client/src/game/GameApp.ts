@@ -13,25 +13,27 @@ import { Client, type Room } from "colyseus.js";
 import type { PlayMode } from "../ui/lobby";
 import type { UserInfo } from "../auth";
 import { mountExpBar, mountLevelUpUi } from "../ui/levelUp";
+import { mountGraphicsSettings } from "../ui/graphicsSettings";
 import {
   WORLD_HEIGHT,
   WORLD_WIDTH,
-  getResolutionPreset,
-  getWorldZoom,
 } from "../settings";
-import { DistInterpolator } from "./interpolation";
+import { AdaptiveQuality } from "./adaptiveQuality";
+import {
+  CannonRecoil,
+  MUZZLE_BALL_R,
+  NEXT_BALL_R,
+  cannonPose,
+  drawCannonBody,
+} from "./cannonView";
+import { DistInterpolator, type BallSample } from "./interpolation";
 import { ProjectilePresenter } from "./projectiles";
 import {
   BallPainter,
   preloadBallTextures,
   prepareBallTextures,
-} from "./drawBall";
-import {
-  CannonRecoil,
-  MUZZLE_BALL_R,
-  NEXT_BALL_R,
-  drawCannonBody,
-} from "./cannonView";
+  setBallPipelineAllowed,
+} from "./balls";
 import { addMapBackground, drawMapHole, drawMapPath } from "./mapView";
 
 const WS_URL =
@@ -88,7 +90,7 @@ interface GameView {
   resolvedShotIds: string[];
 }
 
-function pointAt(points: Point[], dist: number): Point {
+function pointAtInto(points: Point[], dist: number, out: Point): Point {
   let remaining = dist;
   for (let i = 1; i < points.length; i++) {
     const a = points[i - 1];
@@ -96,11 +98,16 @@ function pointAt(points: Point[], dist: number): Point {
     const len = Math.hypot(b.x - a.x, b.y - a.y);
     if (remaining <= len) {
       const t = len === 0 ? 0 : remaining / len;
-      return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+      out.x = a.x + (b.x - a.x) * t;
+      out.y = a.y + (b.y - a.y) * t;
+      return out;
     }
     remaining -= len;
   }
-  return { ...points[points.length - 1] };
+  const last = points[points.length - 1];
+  out.x = last.x;
+  out.y = last.y;
+  return out;
 }
 
 function asArray<T>(value: unknown): T[] {
@@ -309,10 +316,35 @@ export async function startGame(
   const cannonA = mapCannon(map, 0);
   const cannonB = mapCannon(map, 1);
 
+  // Cached state — rebuilt only on Colyseus patches, not every frame.
+  let cachedView = readState(room);
+  room.onStateChange(() => {
+    cachedView = readState(room);
+  });
+
+  // Reused per-frame buffers (avoid GC).
+  const sampleBuf: BallSample[] = [];
+  const ballsByOwner = new Map<string, Point[]>();
+  const hitPointPool: Point[] = [];
+  let hitPointUsed = 0;
+  const drawPos = { x: 0, y: 0 };
+  let lastCannonGfxKey = "";
+
+  let stageW = stage.clientWidth;
+  let stageH = stage.clientHeight;
+  const stageRo = new ResizeObserver(() => {
+    stageW = stage.clientWidth;
+    stageH = stage.clientHeight;
+  });
+  stageRo.observe(stage);
+
   const returnToLobby = async (): Promise<void> => {
     if (leaving) return;
     leaving = true;
+    window.removeEventListener("keydown", onEscape);
+    graphicsUi.dispose();
     disposeLevelUi?.();
+    setBallPipelineAllowed(true);
     await cleanupMatch(room, game);
     location.reload();
   };
@@ -326,8 +358,23 @@ export async function startGame(
     return Math.atan2(pointer.worldY - cannon.y, pointer.worldX - cannon.x);
   };
 
-  const renderPreset = getResolutionPreset();
-  const worldZoom = getWorldZoom(renderPreset.id);
+  const quality = new AdaptiveQuality();
+  const renderPreset = quality.preset;
+  const worldZoom = quality.worldZoom;
+
+  const graphicsUi = mountGraphicsSettings(root, {
+    onApply: () => {
+      quality.syncFromSettings(game);
+    },
+  });
+
+  const onEscape = (e: KeyboardEvent) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    if (leaving) return;
+    graphicsUi.toggle();
+  };
+  window.addEventListener("keydown", onEscape);
 
   game = new Phaser.Game({
     type: Phaser.AUTO,
@@ -365,7 +412,8 @@ export async function startGame(
         const cannonGfx = this.add.graphics().setDepth(4);
 
         this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
-          if (leaving || room.state.phase !== "playing") return;
+          if (leaving || graphicsUi.isOpen() || room.state.phase !== "playing")
+            return;
           const angle = aimFromPointer(pointer);
           if (angle === null) return;
           localAim = angle;
@@ -376,8 +424,9 @@ export async function startGame(
         });
 
         this.input.on("pointerdown", () => {
-          if (leaving || room.state.phase !== "playing") return;
-          const me = readState(room).players.get(room.sessionId);
+          if (leaving || graphicsUi.isOpen() || room.state.phase !== "playing")
+            return;
+          const me = cachedView.players.get(room.sessionId);
           if (!me || me.pendingOffer.length > 0) return;
           const aim = localAim ?? me.aim;
           room.send("aim", { angle: aim });
@@ -400,33 +449,58 @@ export async function startGame(
           const dtMs = Math.min(100, now - lastFrameMs);
           lastFrameMs = now;
 
-          const view = readState(room);
+          const view = cachedView;
           const me = view.players.get(room.sessionId);
 
-          const samples = [];
+          sampleBuf.length = 0;
+          let sampleCount = 0;
           for (const p of view.players.values()) {
             for (const b of p.chain) {
-              samples.push({
-                id: b.id,
-                typeId: b.typeId,
-                fuse: b.fuse,
-                dist: b.dist,
-                seat: p.seat,
-              });
+              let sample = sampleBuf[sampleCount];
+              if (!sample) {
+                sample = {
+                  id: b.id,
+                  typeId: b.typeId,
+                  fuse: b.fuse,
+                  dist: b.dist,
+                  seat: p.seat,
+                };
+                sampleBuf[sampleCount] = sample;
+              } else {
+                sample.id = b.id;
+                sample.typeId = b.typeId;
+                sample.fuse = b.fuse;
+                sample.dist = b.dist;
+                sample.seat = p.seat;
+              }
+              sampleCount++;
             }
           }
-          distInterp.sync(samples);
+          sampleBuf.length = sampleCount;
+          distInterp.sync(sampleBuf);
           distInterp.step(dtMs);
 
-          const ballsByOwner = new Map<string, Point[]>();
+          for (const arr of ballsByOwner.values()) arr.length = 0;
           for (const p of view.players.values()) {
-            ballsByOwner.set(p.sessionId, []);
+            if (!ballsByOwner.has(p.sessionId)) {
+              ballsByOwner.set(p.sessionId, []);
+            }
           }
+          hitPointUsed = 0;
           distInterp.forEach((_id, seat, _typeId, dist) => {
             const path = seat === 0 ? pathA : pathB;
             for (const p of view.players.values()) {
               if (p.seat !== seat) continue;
-              ballsByOwner.get(p.sessionId)?.push(pointAt(path, dist));
+              const arr = ballsByOwner.get(p.sessionId);
+              if (!arr) break;
+              let pt = hitPointPool[hitPointUsed];
+              if (!pt) {
+                pt = { x: 0, y: 0 };
+                hitPointPool[hitPointUsed] = pt;
+              }
+              hitPointUsed++;
+              pointAtInto(path, dist, pt);
+              arr.push(pt);
               break;
             }
           });
@@ -501,35 +575,53 @@ export async function startGame(
               need: expToNextLevel(me.level),
               cannonX: cannon.x,
               cannonY: cannon.y,
-              stageW: stage.clientWidth,
-              stageH: stage.clientHeight,
+              stageW,
+              stageH,
             });
           }
 
           balls.begin();
           projs.begin();
           cannonBalls.begin();
-          cannonGfx.clear();
 
           distInterp.forEach((id, seat, typeId, dist, fuse) => {
             const path = seat === 0 ? pathA : pathB;
-            const pos = pointAt(path, dist);
-            balls.draw(id, typeId, pos.x, pos.y, BALL_RADIUS, fuse);
+            pointAtInto(path, dist, drawPos);
+            balls.draw(id, typeId, drawPos.x, drawPos.y, BALL_RADIUS, fuse);
           });
+
+          let cannonGfxKey = "";
+          let anyRecoil = false;
+          for (const p of view.players.values()) {
+            const isMe = p.sessionId === room.sessionId;
+            const aim = isMe && localAim !== null ? localAim : p.aim;
+            const recoil = cannonRecoil.offset(p.sessionId, aim, now);
+            if (recoil.x !== 0 || recoil.y !== 0) anyRecoil = true;
+            cannonGfxKey += `${p.sessionId}:${aim.toFixed(3)}:${p.currentType}:${p.nextType}|`;
+          }
+          const redrawCannons =
+            cannonGfxKey !== lastCannonGfxKey || anyRecoil;
+          if (redrawCannons) {
+            lastCannonGfxKey = cannonGfxKey;
+            cannonGfx.clear();
+          }
 
           for (const p of view.players.values()) {
             const cannon = p.seat === 0 ? cannonA : cannonB;
             const isMe = p.sessionId === room.sessionId;
             const aim = isMe && localAim !== null ? localAim : p.aim;
+            const recoil = cannonRecoil.offset(p.sessionId, aim, now);
             const barrel = ballDisplayColors(p.currentType)[0] ?? UI.cannon;
-            const pose = drawCannonBody(
-              cannonGfx,
-              cannon.x,
-              cannon.y,
-              aim,
-              cannonRecoil.offset(p.sessionId, aim, now),
-              barrel,
-            );
+            const pose = redrawCannons
+              ? drawCannonBody(
+                  cannonGfx,
+                  cannon.x,
+                  cannon.y,
+                  aim,
+                  recoil,
+                  barrel,
+                )
+              : cannonPose(cannon.x, cannon.y, aim, recoil);
             cannonBalls.draw(
               `muzzle_${p.sessionId}`,
               p.currentType,
@@ -559,6 +651,7 @@ export async function startGame(
   });
 
   room.onLeave(() => {
+    stageRo.disconnect();
     if (!leaving && game?.isRunning) {
       game.destroy(true);
     }
@@ -601,7 +694,7 @@ function renderHud(
       <div>Код комнаты: <b style="color:${UI.accentHot}">${view.roomCode || "—"}</b> · ${view.phase} · ${getRankedMap().name}</div>
       <div>Вы: ${me?.displayName ?? "—"} ★${me?.rating ?? "—"} · комбо ${me?.combo ?? 0} · ур. ${me?.level ?? 0}</div>
       <div>Соперник: ${oppName} ★${oppRating}</div>
-      <div style="color:${UI.secondary}">ЛКМ — выстрел · пулл ${me?.ballPool.length ?? 0} шаров</div>
+      <div style="color:${UI.secondary}">ЛКМ — выстрел · спавн ${me?.ballPool.length ?? 0}</div>
     </div>
   `;
 }

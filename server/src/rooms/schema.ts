@@ -6,7 +6,7 @@ export class BallState extends Schema {
   @type("string") typeId: string = "solid_0";
   /** Distance along path in pixels from spawn. */
   @type("float32") dist: number = 0;
-  /** Bomb fuse seconds remaining; <0 means inactive / not a lit bomb. */
+  /** Lifetime / timer seconds remaining; <0 means inactive. Used by stones. */
   @type("float32") fuse: number = -1;
 }
 
@@ -36,9 +36,11 @@ export class PlayerState extends Schema {
   @type("uint16") exp: number = 0;
   /** Level-ups waiting for a pick while an offer is already open. */
   @type("uint8") offerDebt: number = 0;
-  /** Weighted ball pool (each entry = equal spawn chance). */
+  /** Seconds of path freeze remaining (ice ball). */
+  @type("float32") freezeSec: number = 0;
+  /** Weighted chain spawn pool (each entry = equal spawn chance on the path). */
   @type(["string"]) ballPool = new ArraySchema<string>();
-  /** Level-up offer: up to 3 ball type ids. */
+  /** Level-up offer: up to 3 ball type ids added to the spawn pool. */
   @type(["string"]) pendingOffer = new ArraySchema<string>();
   @type([BallState]) chain = new ArraySchema<BallState>();
 }
@@ -58,6 +60,6 @@ export class RankedState extends Schema {
   @type("string") winnerId: string = "";
   @type("string") loserId: string = "";
   @type("int16") ratingDelta: number = 30;
-  /** Shared RNG seed — both seats draw the same unit stream. */
+  /** Legacy field — chain spawn now uses per-player ballPool. */
   @type("uint32") ballSeed: number = 0;
 }

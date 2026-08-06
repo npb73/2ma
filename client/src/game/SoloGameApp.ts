@@ -4,29 +4,31 @@ import {
   UI,
   ballDisplayColors,
   expToNextLevel,
-  pointAtPath,
+  pointAtPathInto,
   type Point,
 } from "@2ma/shared";
 import Phaser from "phaser";
 import { mountExpBar, mountLevelUpUi } from "../ui/levelUp";
+import { mountGraphicsSettings } from "../ui/graphicsSettings";
 import {
   WORLD_HEIGHT,
   WORLD_WIDTH,
-  getResolutionPreset,
-  getWorldZoom,
 } from "../settings";
-import { DistInterpolator } from "./interpolation";
+import { AdaptiveQuality } from "./adaptiveQuality";
+import { DistInterpolator, type BallSample } from "./interpolation";
 import { ProjectilePresenter } from "./projectiles";
 import { SoloSim } from "./SoloSim";
 import {
   BallPainter,
   preloadBallTextures,
   prepareBallTextures,
-} from "./drawBall";
+  setBallPipelineAllowed,
+} from "./balls";
 import {
   CannonRecoil,
   MUZZLE_BALL_R,
   NEXT_BALL_R,
+  cannonPose,
   drawCannonBody,
 } from "./cannonView";
 import { addMapBackground, drawMapHole, drawMapPath } from "./mapView";
@@ -96,17 +98,54 @@ export async function startSoloGame(
   let tickAcc = 0;
   let lastFrameMs = performance.now();
   let resultShown = false;
+  let lastCannonGfxKey = "";
+
+  const sampleBuf: BallSample[] = [];
+  const ballPositions: Point[] = [];
+  const hitPointPool: Point[] = [];
+  let hitPointUsed = 0;
+  const drawPos = { x: 0, y: 0 };
+  const ballsByOwner = new Map<string, Point[]>([
+    [sim.sessionId, ballPositions],
+  ]);
+
+  let stageW = stage.clientWidth;
+  let stageH = stage.clientHeight;
+  const stageRo = new ResizeObserver(() => {
+    stageW = stage.clientWidth;
+    stageH = stage.clientHeight;
+  });
+  stageRo.observe(stage);
 
   const exit = (): void => {
     if (leaving) return;
     leaving = true;
+    window.removeEventListener("keydown", onEscape);
+    graphicsUi.dispose();
+    stageRo.disconnect();
     disposeLevelUi?.();
+    setBallPipelineAllowed(true);
     if (game?.isRunning) game.destroy(true);
     opts.onExit();
   };
 
-  const renderPreset = getResolutionPreset();
-  const worldZoom = getWorldZoom(renderPreset.id);
+  const quality = new AdaptiveQuality();
+  const renderPreset = quality.preset;
+  const worldZoom = quality.worldZoom;
+
+  const graphicsUi = mountGraphicsSettings(root, {
+    onApply: () => {
+      quality.syncFromSettings(game);
+    },
+  });
+
+  const onEscape = (e: KeyboardEvent) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    if (leaving) return;
+    graphicsUi.toggle();
+  };
+  window.addEventListener("keydown", onEscape);
 
   const game = new Phaser.Game({
     type: Phaser.AUTO,
@@ -142,7 +181,7 @@ export async function startSoloGame(
         const cannonGfx = this.add.graphics().setDepth(4);
 
         this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
-          if (leaving || sim.phase !== "playing") return;
+          if (leaving || graphicsUi.isOpen() || sim.phase !== "playing") return;
           localAim = Math.atan2(
             pointer.worldY - cannon.y,
             pointer.worldX - cannon.x,
@@ -151,7 +190,7 @@ export async function startSoloGame(
         });
 
         this.input.on("pointerdown", () => {
-          if (leaving || sim.phase !== "playing") return;
+          if (leaving || graphicsUi.isOpen() || sim.phase !== "playing") return;
           if (sim.player.pendingOffer.length > 0) return;
           const aim = localAim ?? sim.player.aim;
           sim.setAim(aim);
@@ -180,41 +219,60 @@ export async function startSoloGame(
             }
           }
 
-          const snap = sim.snapshot();
-          const me = snap.players[0];
+          // Live refs — no deep snapshot per frame.
+          const me = sim.player;
 
-          distInterp.sync(
-            me.chain.map((b) => ({
-              id: b.id,
-              typeId: b.typeId,
-              fuse: b.fuse,
-              dist: b.dist,
-              seat: 0,
-            })),
-          );
+          let sampleCount = 0;
+          for (const b of me.chain) {
+            let sample = sampleBuf[sampleCount];
+            if (!sample) {
+              sample = {
+                id: b.id,
+                typeId: b.typeId,
+                fuse: b.fuse,
+                dist: b.dist,
+                seat: 0,
+              };
+              sampleBuf[sampleCount] = sample;
+            } else {
+              sample.id = b.id;
+              sample.typeId = b.typeId;
+              sample.fuse = b.fuse;
+              sample.dist = b.dist;
+              sample.seat = 0;
+            }
+            sampleCount++;
+          }
+          sampleBuf.length = sampleCount;
+          distInterp.sync(sampleBuf);
           distInterp.step(dtMs);
 
-          const ballPositions: Point[] = [];
+          ballPositions.length = 0;
+          hitPointUsed = 0;
           distInterp.forEach((_id, _seat, _typeId, dist) => {
-            ballPositions.push(pointAtPath(pathGeom, dist));
+            let pt = hitPointPool[hitPointUsed];
+            if (!pt) {
+              pt = { x: 0, y: 0 };
+              hitPointPool[hitPointUsed] = pt;
+            }
+            hitPointUsed++;
+            pointAtPathInto(pathGeom, dist, pt);
+            ballPositions.push(pt);
           });
 
           projectiles.syncServer(
-            snap.projectiles,
+            sim.projectiles,
             sim.sessionId,
-            snap.resolvedShotIds,
+            sim.resolvedShotIds,
           );
-          projectiles.step(
-            dtMs / 1000,
-            new Map([[sim.sessionId, ballPositions]]),
-          );
+          projectiles.step(dtMs / 1000, ballsByOwner);
 
           const hudKey = [
-            snap.phase,
+            sim.phase,
             me.combo,
             me.level,
             me.exp,
-            snap.score,
+            sim.score,
             me.ballPool.length,
           ].join("|");
           if (hudKey !== lastHudKey) {
@@ -222,8 +280,8 @@ export async function startSoloGame(
             hud.innerHTML = `
               <div style="font-size:14px;line-height:1.5;background:rgba(4,21,40,.72);padding:10px 14px;border-radius:8px;display:inline-block">
                 <div>Одиночная · ${sim.map.name}</div>
-                <div>Счёт <b style="color:${UI.accentHot}">${snap.score}</b> · комбо ${me.combo} · ур. ${me.level}</div>
-                <div style="color:${UI.secondary}">ЛКМ — выстрел · пулл ${me.ballPool.length}</div>
+                <div>Счёт <b style="color:${UI.accentHot}">${sim.score}</b> · комбо ${me.combo} · ур. ${me.level}</div>
+                <div style="color:${UI.secondary}">ЛКМ — выстрел · спавн ${me.ballPool.length}</div>
               </div>
             `;
           }
@@ -253,12 +311,12 @@ export async function startSoloGame(
             levelPanel.style.display = "none";
           }
 
-          if (snap.phase === "ended" && !resultShown) {
+          if (sim.phase === "ended" && !resultShown) {
             resultShown = true;
             resultPanel.style.display = "block";
             resultPanel.innerHTML = `
               <div style="font-size:28px;color:${UI.accentHot};margin-bottom:8px">Конец игры</div>
-              <div style="font-size:18px;margin-bottom:8px">Счёт: ${snap.score}</div>
+              <div style="font-size:18px;margin-bottom:8px">Счёт: ${sim.score}</div>
               <div style="font-size:14px;color:${UI.textMuted};margin-bottom:16px">Комбо ${me.combo} · уровень ${me.level}</div>
               <button type="button" id="solo-again" style="padding:10px 16px;margin:0 6px;border:none;border-radius:8px;background:${UI.accent};color:${UI.bg};cursor:pointer;font-weight:700">Ещё раз</button>
               <button type="button" id="solo-lobby" style="padding:10px 16px;margin:0 6px;border:none;border-radius:8px;background:${UI.secondaryDark};color:${UI.text};cursor:pointer">В меню</button>
@@ -272,6 +330,7 @@ export async function startSoloGame(
               sim.reset();
               lastHudKey = "";
               lastOfferKey = "";
+              lastCannonGfxKey = "";
               disposeLevelUi?.();
               disposeLevelUi = null;
               levelPanel.style.display = "none";
@@ -289,30 +348,41 @@ export async function startSoloGame(
             need: expToNextLevel(me.level),
             cannonX: cannon.x,
             cannonY: cannon.y,
-            stageW: stage.clientWidth,
-            stageH: stage.clientHeight,
+            stageW,
+            stageH,
           });
 
           balls.begin();
           projs.begin();
           cannonBalls.begin();
-          cannonGfx.clear();
 
           distInterp.forEach((id, _seat, typeId, dist, fuse) => {
-            const pos = pointAtPath(pathGeom, dist);
-            balls.draw(id, typeId, pos.x, pos.y, BALL_RADIUS, fuse);
+            pointAtPathInto(pathGeom, dist, drawPos);
+            balls.draw(id, typeId, drawPos.x, drawPos.y, BALL_RADIUS, fuse);
           });
 
           const aim = localAim ?? me.aim;
+          const recoil = cannonRecoil.offset(sim.sessionId, aim, now);
+          const anyRecoil = recoil.x !== 0 || recoil.y !== 0;
+          const cannonGfxKey = `${aim.toFixed(3)}:${me.currentType}:${me.nextType}`;
+          const redrawCannons =
+            cannonGfxKey !== lastCannonGfxKey || anyRecoil;
+          if (redrawCannons) {
+            lastCannonGfxKey = cannonGfxKey;
+            cannonGfx.clear();
+          }
+
           const barrel = ballDisplayColors(me.currentType)[0] ?? UI.cannon;
-          const pose = drawCannonBody(
-            cannonGfx,
-            cannon.x,
-            cannon.y,
-            aim,
-            cannonRecoil.offset(sim.sessionId, aim, now),
-            barrel,
-          );
+          const pose = redrawCannons
+            ? drawCannonBody(
+                cannonGfx,
+                cannon.x,
+                cannon.y,
+                aim,
+                recoil,
+                barrel,
+              )
+            : cannonPose(cannon.x, cannon.y, aim, recoil);
           cannonBalls.draw(
             "muzzle",
             me.currentType,

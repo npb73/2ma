@@ -53,12 +53,15 @@ export const UI = {
 export {
   BALL_COLORS,
   COLOR_COUNT,
-  BOMB_FUSE_SEC,
-  BOMB_BLAST_RADIUS,
+  EXPLOSIVE_BLAST_RADIUS,
+  ICE_FREEZE_SEC,
+  VOLUN_STONE_COUNT,
+  STONE_LIFETIME_SEC,
   BALL_TYPES,
   getBallType,
   isBallTypeId,
   initialBallPool,
+  cannonSolidPool,
   matchColors,
   typesMatch,
   expandMatchGroup,
@@ -66,10 +69,19 @@ export {
   rollLevelOffer,
   ballDisplayColors,
   solidTypeId,
+  isExplosive,
+  isIce,
+  isVolun,
+  isStone,
+  STONE_TYPE_ID,
+  spawnStoneFuse,
+  blastInclusiveRange,
+  resolveClearEffects,
   type SolidColor,
   type BallKind,
   type BallTypeDef,
-} from "./balls.js";
+  type ClearResolution,
+} from "./balls/index.js";
 
 export const RATING_DELTA = 30;
 export const STARTING_RATING = 1000;
@@ -135,6 +147,7 @@ export {
 export {
   buildPath,
   pointAtPath,
+  pointAtPathInto,
   type PathGeom,
   type PathPoint,
 } from "./path.js";

@@ -6,7 +6,11 @@ function hex(color: string): number {
   return Phaser.Display.Color.HexStringToColor(color).color;
 }
 
-/** Solid fill or optional data-URL background from the map. */
+function isDataUrl(src: string): boolean {
+  return src.startsWith("data:");
+}
+
+/** Solid fill or optional background (data URL, asset path, or http(s) URL). */
 export function addMapBackground(scene: Phaser.Scene, map: GameMap): void {
   if (!map.background) {
     scene.add
@@ -46,6 +50,21 @@ export function addMapBackground(scene: Phaser.Scene, map: GameMap): void {
     )
     .setDepth(-2);
 
+  const src = map.background;
+
+  // Asset / http paths: let Phaser loader handle decode off the critical path.
+  if (!isDataUrl(src)) {
+    scene.load.once(Phaser.Loader.Events.COMPLETE, () => {
+      if (!scene.sys || !scene.sys.isActive()) return;
+      apply();
+    });
+    if (!scene.textures.exists(key)) {
+      scene.load.image(key, src);
+      scene.load.start();
+    }
+    return;
+  }
+
   const img = new Image();
   img.onload = () => {
     if (!scene.sys || !scene.sys.isActive()) return;
@@ -54,7 +73,7 @@ export function addMapBackground(scene: Phaser.Scene, map: GameMap): void {
     }
     apply();
   };
-  img.src = map.background;
+  img.src = src;
 }
 
 export function drawMapPath(scene: Phaser.Scene, points: { x: number; y: number }[]): void {

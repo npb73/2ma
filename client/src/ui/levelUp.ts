@@ -1,10 +1,5 @@
-import {
-  BALL_COLORS,
-  UI,
-  ballDisplayColors,
-  getBallType,
-  type BallTypeDef,
-} from "@2ma/shared";
+import { UI, getBallType, type BallTypeDef } from "@2ma/shared";
+import { ballSwatch } from "../game/balls";
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -15,47 +10,6 @@ function el<K extends keyof HTMLElementTagNameMap>(
   Object.assign(node.style, style);
   if (text) node.textContent = text;
   return node;
-}
-
-function ballSwatch(typeId: string, size = 36): HTMLElement {
-  const colors = ballDisplayColors(typeId);
-  const kind = getBallType(typeId)?.kind ?? "solid";
-  const wrap = el("div", {
-    width: `${size}px`,
-    height: `${size}px`,
-    borderRadius: "50%",
-    flexShrink: "0",
-    boxSizing: "border-box",
-    border: `2px solid ${UI.secondaryDark}`,
-    overflow: "hidden",
-    position: "relative",
-  });
-
-  if (kind === "dual" && colors.length >= 2) {
-    wrap.style.background = `linear-gradient(90deg, ${colors[0]} 50%, ${colors[1]} 50%)`;
-  } else if (kind === "rainbow") {
-    wrap.style.background = `conic-gradient(${BALL_COLORS.join(",")})`;
-  } else if (kind === "bomb") {
-    wrap.style.background = "#293b49";
-    const mark = el(
-      "div",
-      {
-        position: "absolute",
-        inset: "0",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        color: UI.accentHot,
-        fontSize: `${Math.max(10, size * 0.4)}px`,
-        fontWeight: "800",
-      },
-      "B",
-    );
-    wrap.append(mark);
-  } else {
-    wrap.style.background = colors[0] ?? BALL_COLORS[0];
-  }
-  return wrap;
 }
 
 function typeCard(
@@ -118,7 +72,7 @@ function typeCard(
 }
 
 /**
- * Level-up modal: pool preview on top, 3 offer cards in the center.
+ * Level-up modal: spawn-pool preview on top, 3 offer cards in the center.
  * Returns a disposer.
  */
 export function mountLevelUpUi(
@@ -164,7 +118,7 @@ export function mountLevelUpUi(
     el(
       "div",
       { fontSize: "14px", color: UI.textMuted },
-      "Ваш пулл шаров",
+      "Пул спавна линии",
     ),
   );
 
@@ -210,7 +164,7 @@ export function mountLevelUpUi(
         textAlign: "center",
         marginTop: "4px",
       },
-      "Выберите новый шар",
+      "Добавить в линию",
     ),
   );
 
@@ -287,18 +241,48 @@ export function mountExpBar(stage: HTMLElement): {
   root.append(label, track);
   stage.append(root);
 
+  let lastKey = {
+    level: NaN,
+    exp: NaN,
+    need: NaN,
+    left: "",
+    top: "",
+  };
+
   return {
     root,
     update(opts) {
       const need = Math.max(1, opts.need);
       const within = Math.max(0, Math.min(opts.exp, need));
       const pct = (within / need) * 100;
-      label.textContent = `ур. ${opts.level} · ${within}/${need}`;
-      fill.style.width = `${pct}%`;
       const sx = (opts.cannonX / 1280) * opts.stageW;
       const sy = (opts.cannonY / 720) * opts.stageH;
-      root.style.left = `${sx}px`;
-      root.style.top = `${sy + 28}px`;
+      const left = `${sx}px`;
+      const top = `${sy + 28}px`;
+      const labelText = `ур. ${opts.level} · ${within}/${need}`;
+      const widthPct = `${pct}%`;
+
+      if (
+        lastKey.level === opts.level &&
+        lastKey.exp === opts.exp &&
+        lastKey.need === need &&
+        lastKey.left === left &&
+        lastKey.top === top
+      ) {
+        return;
+      }
+      lastKey = {
+        level: opts.level,
+        exp: opts.exp,
+        need,
+        left,
+        top,
+      };
+
+      label.textContent = labelText;
+      fill.style.width = widthPct;
+      root.style.left = left;
+      root.style.top = top;
     },
   };
 }

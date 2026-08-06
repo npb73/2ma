@@ -51,6 +51,22 @@ export interface CannonPose {
 }
 
 /** Body + barrel; returns base/tip after recoil for ball placement. */
+export function cannonPose(
+  cx: number,
+  cy: number,
+  aim: number,
+  recoil: { x: number; y: number },
+): CannonPose {
+  const baseX = cx + recoil.x;
+  const baseY = cy + recoil.y;
+  return {
+    baseX,
+    baseY,
+    tipX: baseX + Math.cos(aim) * BARREL_LEN,
+    tipY: baseY + Math.sin(aim) * BARREL_LEN,
+  };
+}
+
 export function drawCannonBody(
   g: Phaser.GameObjects.Graphics,
   cx: number,
@@ -59,15 +75,10 @@ export function drawCannonBody(
   recoil: { x: number; y: number },
   barrelColor: string = UI.cannon,
 ): CannonPose {
-  const baseX = cx + recoil.x;
-  const baseY = cy + recoil.y;
-  const tipX = baseX + Math.cos(aim) * BARREL_LEN;
-  const tipY = baseY + Math.sin(aim) * BARREL_LEN;
-
+  const pose = cannonPose(cx, cy, aim, recoil);
   g.fillStyle(hex(UI.cannon), 1);
-  g.fillCircle(baseX, baseY, 22);
+  g.fillCircle(pose.baseX, pose.baseY, 22);
   g.lineStyle(5, hex(barrelColor), 1);
-  g.lineBetween(baseX, baseY, tipX, tipY);
-
-  return { baseX, baseY, tipX, tipY };
+  g.lineBetween(pose.baseX, pose.baseY, pose.tipX, pose.tipY);
+  return pose;
 }

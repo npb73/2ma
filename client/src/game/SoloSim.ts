@@ -1,9 +1,7 @@
 import {
   BALL_RADIUS,
-  BOMB_BLAST_RADIUS,
-  BOMB_FUSE_SEC,
-  COLOR_COUNT,
   GAP_EPS,
+  ICE_FREEZE_SEC,
   INITIAL_CHAIN,
   MAX_CHAIN,
   PATH_SPEED,
@@ -11,20 +9,22 @@ import {
   ROLLBACK_PAUSE_SEC,
   ROLLBACK_RAMP_SEC,
   ROLLBACK_SPEED,
+  STONE_TYPE_ID,
   TICK_HZ,
+  VOLUN_STONE_COUNT,
   buildPath,
-  createColorStream,
+  cannonSolidPool,
   expandMatchGroup,
   expToNextLevel,
-  getBallType,
   getSoloMap,
   initialBallPool,
   isBallTypeId,
+  isStone,
   pickFromPool,
-  pointAtPath,
-  randomSeed,
+  pointAtPathInto,
+  resolveClearEffects,
   rollLevelOffer,
-  solidTypeId,
+  spawnStoneFuse,
   typesMatch,
   type GameMap,
   type PathGeom,
@@ -63,6 +63,7 @@ export interface SoloPlayer {
   level: number;
   exp: number;
   offerDebt: number;
+  freezeSec: number;
   ballPool: string[];
   pendingOffer: string[];
   chain: SoloBall[];
@@ -106,7 +107,7 @@ export class SoloSim {
 
   private spawnAcc = 0;
   private floatMotion = new Map<string, FloatMotion>();
-  private chainStream: () => number = () => 0;
+  private readonly cannonPool = cannonSolidPool();
 
   constructor(displayName = "Игрок", map: GameMap = getSoloMap()) {
     this.map = map;
@@ -124,6 +125,7 @@ export class SoloSim {
       level: 0,
       exp: 0,
       offerDebt: 0,
+      freezeSec: 0,
       ballPool: initialBallPool(),
       pendingOffer: [],
       chain: [],
@@ -132,24 +134,25 @@ export class SoloSim {
   }
 
   reset(): void {
-    this.chainStream = createColorStream(randomSeed(), COLOR_COUNT);
     this.player.ballPool = initialBallPool();
     this.player.pendingOffer = [];
     this.player.chain = [];
     for (let i = 0; i < INITIAL_CHAIN; i++) {
+      const typeId = this.nextChainType();
       this.player.chain.push({
         id: nid(),
-        typeId: this.nextChainType(),
+        typeId,
         dist: i * DIAMETER,
-        fuse: -1,
+        fuse: spawnStoneFuse(typeId),
       });
     }
-    this.player.currentType = this.pickPoolType();
-    this.player.nextType = this.pickPoolType();
+    this.player.currentType = this.nextCannonType();
+    this.player.nextType = this.nextCannonType();
     this.player.combo = 0;
     this.player.level = 0;
     this.player.exp = 0;
     this.player.offerDebt = 0;
+    this.player.freezeSec = 0;
     this.player.aim = 0;
     this.projectiles = [];
     this.resolvedShotIds = [];
@@ -198,7 +201,7 @@ export class SoloSim {
     });
 
     p.currentType = p.nextType;
-    p.nextType = this.pickPoolType();
+    p.nextType = this.nextCannonType();
   }
 
   pickBall(typeId: string): void {
@@ -206,102 +209,94 @@ export class SoloSim {
     if (!this.player.pendingOffer.includes(typeId)) return;
     this.player.ballPool.push(typeId);
     this.player.pendingOffer = [];
-    // Next shot must be the newly chosen ball.
-    this.player.currentType = typeId;
     this.flushOfferDebt();
   }
 
-  private pickPoolType(): string {
-    return pickFromPool(this.player.ballPool, () => Math.random());
+  /** Cannon ammo: fixed solids only (purchases never affect the cannon). */
+  private nextCannonType(): string {
+    return pickFromPool(this.cannonPool, () => Math.random());
   }
 
+  /** Chain spawn: weighted pick from the player's spawn pool. */
   private nextChainType(): string {
-    return solidTypeId(this.chainStream());
+    const pool =
+      this.player.ballPool.length > 0
+        ? this.player.ballPool
+        : initialBallPool();
+    return pickFromPool(pool, () => Math.random());
   }
 
   tick(): void {
     if (this.phase !== "playing") return;
     this.advanceChain();
-    this.tickBombFuses();
+    this.tickStoneLifetimes();
     this.advanceProjectiles();
 
     if (this.player.chain.length === 0) return;
-    const balls = this.sortedChain();
+    const balls = this.sortChainInPlace();
     if (balls[balls.length - 1].dist >= this.path.total - 1) {
       this.phase = "ended";
     }
   }
 
-  private sortedChain(): SoloBall[] {
-    return [...this.player.chain].sort((a, b) => a.dist - b.dist);
+  /** Stones expire after STONE_LIFETIME_SEC (independent of freeze). */
+  private tickStoneLifetimes(): void {
+    const balls = this.sortChainInPlace();
+    let anyStone = false;
+    for (const b of balls) {
+      if (!isStone(b.typeId) || b.fuse < 0) continue;
+      b.fuse -= DT;
+      anyStone = true;
+    }
+    if (!anyStone) return;
+
+    const surviving = balls.filter((b) => {
+      if (!isStone(b.typeId)) return true;
+      return b.fuse > 0;
+    });
+    if (surviving.length !== balls.length) {
+      this.player.chain = surviving;
+      this.mergeContacts(this.sortChainInPlace());
+    }
+  }
+
+  /** Sort player.chain in place and return it (no copy). */
+  private sortChainInPlace(): SoloBall[] {
+    this.player.chain.sort((a, b) => a.dist - b.dist);
+    return this.player.chain;
   }
 
   private advanceChain(): void {
+    if (this.player.freezeSec > 0) {
+      this.player.freezeSec = Math.max(0, this.player.freezeSec - DT);
+      return;
+    }
+
     const path = this.path;
-    let balls = this.sortedChain();
+    let balls = this.sortChainInPlace();
 
     if (balls.length > 0) {
       const stepped = this.stepTrainPhysics(balls, path, PATH_SPEED);
       balls = stepped.balls;
-      this.player.chain = balls;
-      if (stepped.joined) {
-        this.resolveJoinMatches();
-        balls = this.sortedChain();
+      if (stepped.joinAt.length > 0) {
+        this.resolveJoinMatches(stepped.joinAt);
+        balls = this.sortChainInPlace();
       }
     }
 
     this.spawnAcc += PATH_SPEED * DT;
     while (this.spawnAcc >= DIAMETER && balls.length < MAX_CHAIN) {
       const back = balls[0];
-      // Fixed entrance: only spawn when the rear has cleared the mouth.
       if (back && back.dist < DIAMETER) break;
       this.spawnAcc -= DIAMETER;
-      balls = [
-        {
-          id: nid(),
-          typeId: this.nextChainType(),
-          dist: 0,
-          fuse: -1,
-        },
-        ...balls,
-      ];
+      const typeId = this.nextChainType();
+      balls.unshift({
+        id: nid(),
+        typeId,
+        dist: 0,
+        fuse: spawnStoneFuse(typeId),
+      });
       this.packFrom(balls, 0);
-    }
-    this.player.chain = balls;
-  }
-
-  private tickBombFuses(): void {
-    let balls = this.sortedChain();
-    for (const b of balls) {
-      if (b.fuse < 0) continue;
-      b.fuse -= DT;
-    }
-    this.player.chain = balls;
-
-    let clearedTotal = 0;
-    let guard = 0;
-    while (guard++ < 8) {
-      balls = this.sortedChain();
-      const bombIdx = balls.findIndex(
-        (b) =>
-          getBallType(b.typeId)?.kind === "bomb" &&
-          b.fuse <= 0 &&
-          b.fuse > -1,
-      );
-      if (bombIdx < 0) break;
-      const left = Math.max(0, bombIdx - BOMB_BLAST_RADIUS);
-      const right = Math.min(balls.length - 1, bombIdx + BOMB_BLAST_RADIUS);
-      clearedTotal += right - left + 1;
-      this.player.chain = [
-        ...balls.slice(0, left),
-        ...balls.slice(right + 1),
-      ];
-      this.score += (right - left + 1) * 10;
-    }
-
-    if (clearedTotal > 0) {
-      this.player.combo += 1;
-      this.grantExp(clearedTotal);
     }
   }
 
@@ -309,12 +304,11 @@ export class SoloSim {
     balls: SoloBall[],
     path: PathGeom,
     pushSpeed: number,
-  ): { balls: SoloBall[]; joined: boolean } {
+  ): { balls: SoloBall[]; joinAt: number[] } {
     balls.sort((a, b) => a.dist - b.dist);
     const segments = this.segmentRanges(balls);
-    if (segments.length === 0) return { balls, joined: false };
+    if (segments.length === 0) return { balls, joinAt: [] };
 
-    const segsBefore = segments.length;
     const [rearStart, rearEnd] = segments[0];
     for (let i = rearStart; i <= rearEnd; i++) {
       balls[i].dist += pushSpeed * DT;
@@ -363,12 +357,22 @@ export class SoloSim {
       if (!liveKeys.has(key)) this.floatMotion.delete(key);
     }
 
+    // Indices where formerly separate segments just came into contact.
+    const joinAt: number[] = [];
+    for (let s = 1; s < segments.length; s++) {
+      const prevEnd = segments[s - 1][1];
+      const nextStart = segments[s][0];
+      if (balls[nextStart].dist - balls[prevEnd].dist <= CONTACT) {
+        joinAt.push(nextStart);
+      }
+    }
+
     balls = this.mergeContacts(balls);
     for (const b of balls) {
       if (b.dist < 0) b.dist = 0;
       if (b.dist > path.total) b.dist = path.total;
     }
-    return { balls, joined: this.segmentRanges(balls).length < segsBefore };
+    return { balls, joinAt };
   }
 
   private segmentRanges(balls: SoloBall[]): Array<[number, number]> {
@@ -402,33 +406,46 @@ export class SoloSim {
     return balls;
   }
 
-  private resolveJoinMatches(): void {
+  /**
+   * After floating segments collide, clear a color group only if the match
+   * spans a join seam. Spawned same-color runs that were already contiguous
+   * must stay until the player inserts a completing ball.
+   */
+  private resolveJoinMatches(joinAt: number[]): void {
+    if (joinAt.length === 0) return;
+    let seams = [...joinAt];
     let guard = 0;
     let clearedTotal = 0;
-    while (guard++ < 8) {
-      const balls = this.sortedChain();
+    while (guard++ < 8 && seams.length > 0) {
+      const balls = this.sortChainInPlace();
       if (balls.length < 3) break;
-      let cleared = false;
-      let i = 0;
-      while (i < balls.length) {
-        let j = i;
-        while (
-          j + 1 < balls.length &&
-          typesMatch(balls[j].typeId, balls[j + 1].typeId) &&
-          balls[j + 1].dist - balls[j].dist <= CONTACT
-        ) {
-          j++;
-        }
-        if (j - i + 1 >= 3) {
-          clearedTotal += j - i + 1;
-          this.player.chain = [...balls.slice(0, i), ...balls.slice(j + 1)];
-          cleared = true;
-          break;
-        }
-        i = j + 1;
+
+      let clearedLeft = -1;
+      let clearedRight = -1;
+      for (const seam of seams) {
+        if (seam <= 0 || seam >= balls.length) continue;
+        if (balls[seam].dist - balls[seam - 1].dist > CONTACT) continue;
+        if (!typesMatch(balls[seam - 1].typeId, balls[seam].typeId)) continue;
+
+        const [left, right] = expandMatchGroup(
+          balls.map((b) => b.typeId),
+          balls.map((b) => b.dist),
+          seam,
+          CONTACT,
+        );
+        if (left >= seam || right < seam) continue;
+        if (right - left + 1 < 3) continue;
+
+        clearedLeft = left;
+        clearedRight = right;
+        break;
       }
-      if (!cleared) break;
-      this.player.chain = this.mergeContacts(this.sortedChain());
+
+      if (clearedLeft < 0) break;
+
+      const typeIds = balls.map((b) => b.typeId);
+      clearedTotal += this.commitClear(balls, typeIds, clearedLeft, clearedRight);
+      break;
     }
     if (clearedTotal > 0) {
       this.player.combo += 1;
@@ -438,6 +455,8 @@ export class SoloSim {
 
   private advanceProjectiles(): void {
     const survivors: SoloProjectile[] = [];
+    const balls = this.sortChainInPlace();
+    const hitPos = { x: 0, y: 0 };
     for (const proj of this.projectiles) {
       proj.x += proj.vx * DT;
       proj.y += proj.vy * DT;
@@ -450,9 +469,9 @@ export class SoloSim {
       let bestD = Infinity;
       let hitDist = 0;
       let hit = false;
-      for (const ball of this.sortedChain()) {
-        const pos = pointAtPath(this.path, ball.dist);
-        const d = Math.hypot(pos.x - proj.x, pos.y - proj.y);
+      for (const ball of balls) {
+        pointAtPathInto(this.path, ball.dist, hitPos);
+        const d = Math.hypot(hitPos.x - proj.x, hitPos.y - proj.y);
         if (d <= BALL_RADIUS * 1.6 && d < bestD) {
           bestD = d;
           hitDist = ball.dist;
@@ -477,7 +496,7 @@ export class SoloSim {
   }
 
   private insertAndMatch(nearDist: number, typeId: string): void {
-    const balls = this.sortedChain();
+    const balls = this.sortChainInPlace();
     if (balls.length === 0) return;
 
     let hitIdx = 0;
@@ -490,17 +509,15 @@ export class SoloSim {
       }
     }
 
-    // Only shift balls in the same contact segment — floating groups stay put.
     const segs = this.segmentRanges(balls);
     const hitSeg = segs.find(([s, e]) => hitIdx >= s && hitIdx <= e);
     const segEnd = hitSeg ? hitSeg[1] : hitIdx;
 
-    const kind = getBallType(typeId)?.kind;
     const insert: SoloBall = {
       id: nid(),
       typeId,
       dist: balls[hitIdx].dist + DIAMETER * 0.5,
-      fuse: kind === "bomb" ? BOMB_FUSE_SEC : -1,
+      fuse: spawnStoneFuse(typeId),
     };
     for (let i = hitIdx + 1; i <= segEnd; i++) {
       balls[i].dist += DIAMETER;
@@ -514,39 +531,63 @@ export class SoloSim {
     const segsAfter = this.segmentRanges(balls);
     const packSeg = segsAfter.find(([s, e]) => idx >= s && idx <= e);
     if (packSeg) this.packFrom(balls, packSeg[0], packSeg[1]);
-    this.player.chain = balls;
 
-    const chain = this.sortedChain();
-    const insertIdx = chain.findIndex((b) => b.id === insert.id);
+    const insertIdx = balls.findIndex((b) => b.id === insert.id);
     if (insertIdx < 0) return;
 
-    if (kind === "bomb") {
-      this.player.chain = chain;
-      return;
-    }
-
+    const typeIds = balls.map((b) => b.typeId);
     const [left, right] = expandMatchGroup(
-      chain.map((b) => b.typeId),
-      chain.map((b) => b.dist),
+      typeIds,
+      balls.map((b) => b.dist),
       insertIdx,
       CONTACT,
     );
     const groupSize = right - left + 1;
     if (groupSize < 3) {
-      this.player.chain = chain;
       this.player.combo = 0;
       return;
     }
 
-    const cleared = right - left + 1;
-    this.player.chain = [
-      ...chain.slice(0, left),
-      ...chain.slice(right + 1),
-    ];
+    const cleared = this.commitClear(balls, typeIds, left, right);
     this.score += cleared * 10 + this.player.combo * 5;
-
     this.player.combo += 1;
-    this.grantExp(groupSize);
+    this.grantExp(cleared);
+  }
+
+  private commitClear(
+    balls: SoloBall[],
+    typeIds: string[],
+    left: number,
+    right: number,
+  ): number {
+    const effects = resolveClearEffects(typeIds, left, right);
+    const removeSet = new Set(effects.remove);
+    this.player.chain = balls.filter((_, i) => !removeSet.has(i));
+    this.mergeContacts(this.sortChainInPlace());
+
+    if (effects.freeze) {
+      this.player.freezeSec = Math.max(this.player.freezeSec, ICE_FREEZE_SEC);
+    }
+    if (effects.volun) {
+      this.spawnVolunStones();
+    }
+    return effects.remove.length;
+  }
+
+  /** Solo: no opponent — stones land on the player's own chain. */
+  private spawnVolunStones(): void {
+    let balls = this.sortChainInPlace();
+    for (let i = 0; i < VOLUN_STONE_COUNT; i++) {
+      if (balls.length >= MAX_CHAIN) break;
+      for (const b of balls) b.dist += DIAMETER;
+      balls.unshift({
+        id: nid(),
+        typeId: STONE_TYPE_ID,
+        dist: 0,
+        fuse: spawnStoneFuse(STONE_TYPE_ID),
+      });
+    }
+    this.packFrom(balls, 0);
   }
 
   private grantExp(cleared: number): void {

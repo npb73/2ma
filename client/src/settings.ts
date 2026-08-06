@@ -34,50 +34,112 @@ export const RESOLUTION_PRESETS: readonly ResolutionPreset[] = [
 ] as const;
 
 const KEY = "2ma_settings";
-const DEFAULT_ID: ResolutionId = "720";
 
 export interface ClientSettings {
-  resolutionId: ResolutionId;
+  /**
+   * On: highest preset that fits the display (device pixels).
+   * Off: lock to Full HD (1080p).
+   */
+  antialias: boolean;
+  /** Fish-eye textured solids. */
+  prettyBalls: boolean;
 }
 
-function isResolutionId(value: unknown): value is ResolutionId {
-  return RESOLUTION_PRESETS.some((p) => p.id === value);
+const DEFAULTS: ClientSettings = {
+  antialias: true,
+  prettyBalls: true,
+};
+
+function migrate(raw: Record<string, unknown>): ClientSettings {
+  if (typeof raw.antialias === "boolean" || typeof raw.prettyBalls === "boolean") {
+    return {
+      antialias:
+        typeof raw.antialias === "boolean" ? raw.antialias : DEFAULTS.antialias,
+      prettyBalls:
+        typeof raw.prettyBalls === "boolean"
+          ? raw.prettyBalls
+          : DEFAULTS.prettyBalls,
+    };
+  }
+
+  // Legacy: quality/resolutionId → map to antialias.
+  const quality = raw.quality;
+  const resolutionId = raw.resolutionId;
+  let antialias = DEFAULTS.antialias;
+  if (quality === "manual" && resolutionId === "1080") {
+    antialias = false;
+  } else if (quality === "manual" && resolutionId === "720") {
+    antialias = false;
+  } else if (quality === "manual" && resolutionId === "480") {
+    antialias = false;
+  }
+  return { antialias, prettyBalls: DEFAULTS.prettyBalls };
 }
 
 export function loadSettings(): ClientSettings {
   try {
     const raw = localStorage.getItem(KEY);
-    if (!raw) return { resolutionId: DEFAULT_ID };
-    const parsed = JSON.parse(raw) as Partial<ClientSettings>;
-    return {
-      resolutionId: isResolutionId(parsed.resolutionId)
-        ? parsed.resolutionId
-        : DEFAULT_ID,
-    };
+    if (!raw) return { ...DEFAULTS };
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return migrate(parsed);
   } catch {
-    return { resolutionId: DEFAULT_ID };
+    return { ...DEFAULTS };
   }
 }
 
 export function saveSettings(patch: Partial<ClientSettings>): ClientSettings {
   const next = { ...loadSettings(), ...patch };
-  if (!isResolutionId(next.resolutionId)) next.resolutionId = DEFAULT_ID;
+  next.antialias = Boolean(next.antialias);
+  next.prettyBalls = Boolean(next.prettyBalls);
   localStorage.setItem(KEY, JSON.stringify(next));
   return next;
 }
 
 export function getResolutionPreset(
-  id: ResolutionId = loadSettings().resolutionId,
+  id: ResolutionId,
 ): ResolutionPreset {
   return (
     RESOLUTION_PRESETS.find((p) => p.id === id) ??
-    RESOLUTION_PRESETS.find((p) => p.id === DEFAULT_ID)!
+    RESOLUTION_PRESETS.find((p) => p.id === "1080")!
   );
 }
 
+/** Highest preset whose height fits the physical display pixels. */
+export function maxResolutionForScreen(): ResolutionId {
+  const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+  const cssH =
+    typeof window !== "undefined"
+      ? window.screen?.height || window.innerHeight || 1080
+      : 1080;
+  const targetH = Math.round(cssH * dpr);
+
+  let best: ResolutionId = "480";
+  for (const p of RESOLUTION_PRESETS) {
+    if (p.height <= targetH) best = p.id;
+  }
+  return best;
+}
+
+/** Active canvas preset from current settings. */
+export function activeResolutionId(
+  settings: ClientSettings = loadSettings(),
+): ResolutionId {
+  return settings.antialias ? maxResolutionForScreen() : "1080";
+}
+
 /** Camera zoom so the fixed world fills the chosen canvas size. */
-export function getWorldZoom(
-  id: ResolutionId = loadSettings().resolutionId,
-): number {
+export function getWorldZoom(id: ResolutionId = activeResolutionId()): number {
   return getResolutionPreset(id).height / WORLD_HEIGHT;
+}
+
+export function resolutionIndex(id: ResolutionId): number {
+  return Math.max(
+    0,
+    RESOLUTION_PRESETS.findIndex((p) => p.id === id),
+  );
+}
+
+export function resolutionByIndex(index: number): ResolutionPreset {
+  const i = Math.max(0, Math.min(RESOLUTION_PRESETS.length - 1, index));
+  return RESOLUTION_PRESETS[i]!;
 }

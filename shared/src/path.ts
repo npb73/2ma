@@ -19,8 +19,23 @@ export function buildPath(points: PathPoint[]): PathGeom {
 }
 
 export function pointAtPath(path: PathGeom, dist: number): PathPoint {
+  const out = { x: 0, y: 0 };
+  return pointAtPathInto(path, dist, out);
+}
+
+/** Write path sample into `out` (no allocation). */
+export function pointAtPathInto(
+  path: PathGeom,
+  dist: number,
+  out: PathPoint,
+): PathPoint {
   const d = Math.max(0, Math.min(dist, path.total));
-  if (d <= 0) return { ...path.points[0] };
+  if (d <= 0) {
+    const p0 = path.points[0];
+    out.x = p0.x;
+    out.y = p0.y;
+    return out;
+  }
   for (let i = 1; i < path.lengths.length; i++) {
     if (d <= path.lengths[i]) {
       const segStart = path.lengths[i - 1];
@@ -28,11 +43,13 @@ export function pointAtPath(path: PathGeom, dist: number): PathPoint {
       const t = segLen === 0 ? 0 : (d - segStart) / segLen;
       const a = path.points[i - 1];
       const b = path.points[i];
-      return {
-        x: a.x + (b.x - a.x) * t,
-        y: a.y + (b.y - a.y) * t,
-      };
+      out.x = a.x + (b.x - a.x) * t;
+      out.y = a.y + (b.y - a.y) * t;
+      return out;
     }
   }
-  return { ...path.points[path.points.length - 1] };
+  const last = path.points[path.points.length - 1];
+  out.x = last.x;
+  out.y = last.y;
+  return out;
 }

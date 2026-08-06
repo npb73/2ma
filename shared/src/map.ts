@@ -43,7 +43,7 @@ export type GameMap = {
   width: number;
   height: number;
   players: 1 | 2;
-  /** Background image as data URL, or null for solid default. */
+  /** Background image as data URL, asset path, or http(s) URL; null = solid default. */
   background: string | null;
   lanes: MapLane[];
 };
@@ -104,7 +104,7 @@ export function validateMap(value: unknown): string | null {
   }
   if (m.players !== 1 && m.players !== 2) return "players должен быть 1 или 2";
   if (m.background !== null && typeof m.background !== "string") {
-    return "background должен быть data URL или null";
+    return "background должен быть data URL, путём ассета, URL или null";
   }
   if (!Array.isArray(m.lanes)) return "Нужен массив lanes";
   if (m.lanes.length !== m.players) {

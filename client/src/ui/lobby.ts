@@ -1,12 +1,7 @@
 import { UI } from "@2ma/shared";
 import type { Session, UserInfo } from "../auth";
 import { saveSession } from "../auth";
-import {
-  RESOLUTION_PRESETS,
-  type ResolutionId,
-  loadSettings,
-  saveSettings,
-} from "../settings";
+import { mountGraphicsSettings } from "./graphicsSettings";
 
 export type PlayMode = "queue" | "create" | "join" | "solo";
 
@@ -50,7 +45,8 @@ export function createLobbyUi(root: HTMLElement, opts: LobbyOptions): void {
     right: "20px",
     zIndex: "2",
   });
-  const settingsBtn = button("Настройки", () => openSettingsModal(root), true);
+  const graphicsUi = mountGraphicsSettings(root);
+  const settingsBtn = button("Настройки", () => graphicsUi.toggle(), true);
   settingsBtn.style.minWidth = "0";
   settingsBtn.style.padding = "10px 16px";
   topBar.append(settingsBtn);
@@ -306,135 +302,6 @@ export function createLobbyUi(root: HTMLElement, opts: LobbyOptions): void {
 
   wrap.append(topBar, center, userPanel);
   root.append(wrap);
-}
-
-function openSettingsModal(root: HTMLElement): void {
-  const existing = root.querySelector("[data-settings-modal]");
-  if (existing) {
-    existing.remove();
-    return;
-  }
-
-  let selected = loadSettings().resolutionId;
-
-  const backdrop = el("div", {
-    position: "fixed",
-    inset: "0",
-    zIndex: "100",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    background: "rgba(3,7,16,.72)",
-    padding: "24px",
-    boxSizing: "border-box",
-  });
-  backdrop.dataset.settingsModal = "1";
-
-  const panel = el("div", {
-    width: "min(100%, 360px)",
-    background: UI.bgPanel,
-    border: `1px solid ${UI.secondaryDark}`,
-    borderRadius: "12px",
-    padding: "24px",
-    boxSizing: "border-box",
-    color: UI.text,
-  });
-
-  const heading = el(
-    "div",
-    {
-      fontSize: "20px",
-      fontWeight: "700",
-      marginBottom: "6px",
-      color: UI.accent,
-    },
-    "Настройки",
-  );
-
-  const note = el(
-    "p",
-    {
-      margin: "0 0 16px",
-      fontSize: "13px",
-      lineHeight: "1.45",
-      color: UI.textMuted,
-    },
-    "Разрешение рендера. Мир остаётся 1280×720 — выше значение даёт более чёткую картинку. Применится в следующей игре.",
-  );
-
-  const list = el("div", {
-    display: "flex",
-    flexDirection: "column",
-    gap: "8px",
-    marginBottom: "20px",
-  });
-
-  const optionButtons: HTMLButtonElement[] = [];
-
-  const refreshOptions = () => {
-    for (const btn of optionButtons) {
-      const id = btn.dataset.resId as ResolutionId;
-      const active = id === selected;
-      btn.style.background = active ? UI.accent : "transparent";
-      btn.style.color = active ? UI.bg : UI.text;
-      btn.style.border = active
-        ? `1px solid ${UI.accent}`
-        : `1px solid ${UI.secondaryDark}`;
-    }
-  };
-
-  for (const preset of RESOLUTION_PRESETS) {
-    const btn = el("button", {
-      display: "flex",
-      justifyContent: "space-between",
-      alignItems: "center",
-      width: "100%",
-      padding: "10px 14px",
-      borderRadius: "8px",
-      border: `1px solid ${UI.secondaryDark}`,
-      background: "transparent",
-      color: UI.text,
-      fontSize: "14px",
-      fontWeight: "600",
-      cursor: "pointer",
-      boxSizing: "border-box",
-    }) as HTMLButtonElement;
-    btn.dataset.resId = preset.id;
-    btn.type = "button";
-    btn.innerHTML = `<span>${preset.label}</span><span style="color:inherit;opacity:.7;font-weight:500">${preset.width}×${preset.height}</span>`;
-    btn.onclick = () => {
-      selected = preset.id;
-      refreshOptions();
-    };
-    optionButtons.push(btn);
-    list.append(btn);
-  }
-  refreshOptions();
-
-  const actions = el("div", {
-    display: "flex",
-    gap: "8px",
-    justifyContent: "flex-end",
-  });
-
-  const cancel = button("Отмена", () => backdrop.remove(), true);
-  cancel.style.minWidth = "0";
-  cancel.style.flex = "1";
-
-  const save = button("Сохранить", () => {
-    saveSettings({ resolutionId: selected });
-    backdrop.remove();
-  });
-  save.style.minWidth = "0";
-  save.style.flex = "1";
-
-  actions.append(cancel, save);
-  panel.append(heading, note, list, actions);
-  backdrop.append(panel);
-  backdrop.addEventListener("click", (e) => {
-    if (e.target === backdrop) backdrop.remove();
-  });
-  root.append(backdrop);
 }
 
 function button(

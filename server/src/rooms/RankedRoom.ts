@@ -25,7 +25,6 @@ interface AuthUser {
 export class RankedRoom extends Room<RankedState> {
   maxClients = 2;
   private sim!: GameSim;
-  private tickInterval?: ReturnType<typeof setInterval>;
   private ratingApplied = false;
   private isPrivate = false;
 
@@ -127,7 +126,7 @@ export class RankedRoom extends Room<RankedState> {
   }
 
   onDispose(): void {
-    if (this.tickInterval) clearInterval(this.tickInterval);
+    this.setSimulationInterval();
     unregisterRoomCode(this.roomId);
   }
 
@@ -139,7 +138,7 @@ export class RankedRoom extends Room<RankedState> {
 
     this.state.phase = "playing";
     this.sim.initChains();
-    this.tickInterval = setInterval(() => this.step(), 1000 / TICK_HZ);
+    this.setSimulationInterval(() => this.step(), 1000 / TICK_HZ);
   }
 
   private step(): void {
@@ -156,10 +155,7 @@ export class RankedRoom extends Room<RankedState> {
   ): Promise<void> {
     if (this.ratingApplied) return;
     this.ratingApplied = true;
-    if (this.tickInterval) {
-      clearInterval(this.tickInterval);
-      this.tickInterval = undefined;
-    }
+    this.setSimulationInterval();
 
     this.state.phase = "ended";
     this.state.loserId = loserSessionId;
