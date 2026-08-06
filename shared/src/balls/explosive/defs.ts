@@ -8,7 +8,7 @@ export function explosiveDefs(): BallTypeDef[] {
       kind: "explosive",
       colors: [],
       title: "Взрывной шар",
-      description: `Комбо с любым цветом — взрыв ±${EXPLOSIVE_BLAST_RADIUS} шаров`,
+      description: `Принимает цвет соседей одного цвета; комбо — взрыв ±${EXPLOSIVE_BLAST_RADIUS} шаров`,
       unique: true,
     },
   ];

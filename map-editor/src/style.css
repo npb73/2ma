@@ -114,6 +114,47 @@ body {
   text-align: right;
 }
 
+.bg-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: #041528;
+}
+
+.bg-label {
+  font-size: 0.85rem;
+  color: var(--muted);
+  padding-top: 4px;
+  flex-shrink: 0;
+}
+
+.palette {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.swatch {
+  width: 22px;
+  height: 22px;
+  border: 2px solid transparent;
+  border-radius: 3px;
+  padding: 0;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px #0006;
+}
+
+.swatch:hover {
+  border-color: var(--secondary);
+}
+
+.swatch.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
 .status {
   font-size: 0.8rem;
   color: var(--muted);

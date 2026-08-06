@@ -1,10 +1,13 @@
 import {
   BALL_RADIUS,
+  EXP_ORB_EXPIRE_SEC,
+  EXP_PARTICLE_WAIT_SEC,
   GAP_EPS,
   ICE_FREEZE_SEC,
   INITIAL_CHAIN,
   MAX_CHAIN,
   PATH_SPEED,
+  PROJECTILE_HIT_RADIUS,
   PROJECTILE_SPEED,
   ROLLBACK_PAUSE_SEC,
   ROLLBACK_RAMP_SEC,
@@ -13,8 +16,11 @@ import {
   TICK_HZ,
   VOLUN_STONE_COUNT,
   cannonSolidPool,
+  expParticleColor,
+  expParticleReadyDelaySec,
   expandMatchGroup,
   expToNextLevel,
+  firstProjectileHit,
   getRankedMap,
   initialBallPool,
   isBallTypeId,
@@ -28,16 +34,18 @@ import {
   typesMatch,
   type GameMap,
   type Point,
+  type ProjectileHitTarget,
 } from "@2ma/shared";
 import { ArraySchema } from "@colyseus/schema";
 import { nanoid } from "nanoid";
 import {
   BallState,
+  ExpOrbCredit,
   PlayerState,
   ProjectileState,
   RankedState,
 } from "../rooms/schema.js";
-import { buildPath, pointAt, type PathGeom } from "./path.js";
+import { buildPath, pointAt, pointAtPathInto, type PathGeom } from "./path.js";
 
 const DT = 1 / TICK_HZ;
 const DIAMETER = BALL_RADIUS * 2;
@@ -46,6 +54,13 @@ const CONTACT = DIAMETER + GAP_EPS;
 interface FloatMotion {
   pause: number;
   rampT: number;
+}
+
+/** Server-only timing for collect validation / expire (not synced). */
+interface ExpOrbMeta {
+  ownerSessionId: string;
+  readyAt: number;
+  expiresAt: number;
 }
 
 function poolOf(p: PlayerState): string[] {
@@ -84,16 +99,28 @@ export class GameSim {
   readonly cannons: [Point, Point];
   private spawnAcc = [0, 0];
   private ended = false;
+  private simTime = 0;
+  private expOrbMeta = new Map<string, ExpOrbMeta>();
   private floatMotion = new Map<string, Map<string, FloatMotion>>();
   private readonly cannonPool = cannonSolidPool();
+  /** Reused hit targets per seat for projectile sweeps (avoid per-proj alloc). */
+  private readonly projTargets: [ProjectileHitTarget[], ProjectileHitTarget[]] = [
+    [],
+    [],
+  ];
+  private readonly projTargetPools: [
+    ProjectileHitTarget[],
+    ProjectileHitTarget[],
+  ] = [[], []];
+  private readonly pathSample = { x: 0, y: 0 };
 
-  constructor(private state: RankedState, map: GameMap = getRankedMap()) {
+  constructor(
+    private state: RankedState,
+    map: GameMap = getRankedMap(),
+  ) {
     this.map = map;
     this.paths = [buildPath(mapPath(map, 0)), buildPath(mapPath(map, 1))];
-    this.cannons = [
-      { ...mapCannon(map, 0) },
-      { ...mapCannon(map, 1) },
-    ];
+    this.cannons = [{ ...mapCannon(map, 0) }, { ...mapCannon(map, 1) }];
   }
 
   get isEnded(): boolean {
@@ -148,9 +175,12 @@ export class GameSim {
       player.aim = player.seat === 0 ? 0 : Math.PI;
     }
     this.state.projectiles.clear();
+    this.state.expOrbs.clear();
     this.state.resolvedShotIds.clear();
     this.spawnAcc = [0, 0];
     this.ended = false;
+    this.simTime = 0;
+    this.expOrbMeta.clear();
     this.floatMotion.clear();
   }
 
@@ -194,12 +224,28 @@ export class GameSim {
     this.flushOfferDebt(p);
   }
 
+  /**
+   * Client claims an exp orb by id. Returns true if granted.
+   * Rejects unknown / foreign / not-yet-ready ids.
+   */
+  collectExp(sessionId: string, orbId: string): boolean {
+    if (this.state.phase !== "playing" || this.ended) return false;
+    const id = sanitizeShotId(orbId);
+    if (!id) return false;
+    const meta = this.expOrbMeta.get(id);
+    if (!meta || meta.ownerSessionId !== sessionId) return false;
+    if (meta.readyAt > this.simTime) return false;
+    return this.consumeExpOrb(id);
+  }
+
   tick(): { loserSessionId?: string } {
     if (this.state.phase !== "playing" || this.ended) return {};
 
+    this.simTime += DT;
     this.advanceChains();
     this.tickStoneLifetimes();
     this.advanceProjectiles();
+    this.tickExpiredExpOrbs();
 
     for (const [, p] of this.state.players) {
       if (p.chain.length === 0) continue;
@@ -234,6 +280,14 @@ export class GameSim {
         return b.fuse > 0;
       });
       if (surviving.length !== balls.length) {
+        const expired = balls.filter(
+          (b) => isStone(b.typeId) && b.fuse <= 0,
+        );
+        const path = this.paths[p.seat];
+        for (const b of expired) {
+          const pos = pointAt(path, b.dist);
+          this.spawnExpOrbCredit(p, pos.x, pos.y, b.typeId);
+        }
         this.writeBalls(p, surviving);
         this.mergeContacts(this.copyBalls(p));
       }
@@ -263,10 +317,7 @@ export class GameSim {
       }
 
       this.spawnAcc[p.seat] += speed * DT;
-      while (
-        this.spawnAcc[p.seat] >= DIAMETER &&
-        balls.length < MAX_CHAIN
-      ) {
+      while (this.spawnAcc[p.seat] >= DIAMETER && balls.length < MAX_CHAIN) {
         const back = balls[0];
         // Fixed entrance: only spawn when the rear has cleared the mouth.
         if (back && back.dist < DIAMETER) break;
@@ -449,7 +500,6 @@ export class GameSim {
     }
     if (clearedTotal > 0) {
       player.combo += 1;
-      this.grantExp(player, clearedTotal);
     }
   }
 
@@ -471,47 +521,97 @@ export class GameSim {
     p.chain = next;
   }
 
-  private advanceProjectiles(): void {
-    const survivors = new ArraySchema<ProjectileState>();
-    for (const proj of this.state.projectiles) {
-      proj.x += proj.vx * DT;
-      proj.y += proj.vy * DT;
-
-      if (proj.x < -50 || proj.x > 1330 || proj.y < -50 || proj.y > 770) {
-        this.markShotResolved(proj.id);
-        continue;
+  /** Build swept-hit targets for a seat (once per tick via caller flag). */
+  private rebuildProjTargets(owner: PlayerState): ProjectileHitTarget[] {
+    const seat = owner.seat === 0 ? 0 : 1;
+    const path = this.paths[seat];
+    const balls = this.copyBalls(owner);
+    const targets = this.projTargets[seat];
+    const pool = this.projTargetPools[seat];
+    targets.length = 0;
+    const sample = this.pathSample;
+    for (let i = 0; i < balls.length; i++) {
+      const ball = balls[i];
+      pointAtPathInto(path, ball.dist, sample);
+      let t = pool[i];
+      if (!t) {
+        t = { x: 0, y: 0, dist: 0 };
+        pool[i] = t;
       }
+      t.x = sample.x;
+      t.y = sample.y;
+      t.dist = ball.dist;
+      targets.push(t);
+    }
+    return targets;
+  }
+
+  private advanceProjectiles(): void {
+    const margin = 80;
+    const minX = -margin;
+    const maxX = this.map.width + margin;
+    const minY = -margin;
+    const maxY = this.map.height + margin;
+
+    const built: [boolean, boolean] = [false, false];
+    const removeAt: number[] = [];
+    const hits: { owner: PlayerState; dist: number; typeId: string }[] = [];
+
+    const projs = this.state.projectiles;
+    for (let i = 0; i < projs.length; i++) {
+      const proj = projs.at(i);
+      if (!proj) continue;
 
       const owner = this.state.players.get(proj.ownerSessionId);
       if (!owner) {
         this.markShotResolved(proj.id);
+        removeAt.push(i);
         continue;
       }
 
-      const path = this.paths[owner.seat];
-      let hitDist = 0;
-      let bestD = Infinity;
-      let hit = false;
-      const balls = this.copyBalls(owner);
-      for (const ball of balls) {
-        const pos = pointAt(path, ball.dist);
-        const d = Math.hypot(pos.x - proj.x, pos.y - proj.y);
-        if (d <= BALL_RADIUS * 1.6 && d < bestD) {
-          bestD = d;
-          hitDist = ball.dist;
-          hit = true;
-        }
+      const seat = owner.seat === 0 ? 0 : 1;
+      if (!built[seat]) {
+        this.rebuildProjTargets(owner);
+        built[seat] = true;
       }
+      const targets = this.projTargets[seat];
 
-      if (!hit) {
-        survivors.push(proj);
+      const x0 = proj.x;
+      const y0 = proj.y;
+      const x1 = x0 + proj.vx * DT;
+      const y1 = y0 + proj.vy * DT;
+
+      const hit = firstProjectileHit(
+        x0,
+        y0,
+        x1,
+        y1,
+        targets,
+        PROJECTILE_HIT_RADIUS,
+      );
+      if (hit) {
+        this.markShotResolved(proj.id);
+        hits.push({ owner, dist: hit.dist, typeId: proj.typeId });
+        removeAt.push(i);
         continue;
       }
 
-      this.markShotResolved(proj.id);
-      this.insertAndMatch(owner, hitDist, proj.typeId);
+      proj.x = x1;
+      proj.y = y1;
+
+      if (proj.x < minX || proj.x > maxX || proj.y < minY || proj.y > maxY) {
+        this.markShotResolved(proj.id);
+        removeAt.push(i);
+      }
     }
-    this.state.projectiles = survivors;
+
+    for (let i = removeAt.length - 1; i >= 0; i--) {
+      projs.splice(removeAt[i], 1);
+    }
+
+    for (const h of hits) {
+      this.insertAndMatch(h.owner, h.dist, h.typeId);
+    }
   }
 
   private markShotResolved(shotId: string): void {
@@ -543,10 +643,7 @@ export class GameSim {
     const hitSeg = segs.find(([s, e]) => hitIdx >= s && hitIdx <= e);
     const segEnd = hitSeg ? hitSeg[1] : hitIdx;
 
-    const insert = this.makeBall(
-      typeId,
-      balls[hitIdx].dist + DIAMETER * 0.5,
-    );
+    const insert = this.makeBall(typeId, balls[hitIdx].dist + DIAMETER * 0.5);
 
     for (let i = hitIdx + 1; i <= segEnd; i++) {
       balls[i].dist += DIAMETER;
@@ -576,9 +673,8 @@ export class GameSim {
       return;
     }
 
-    const cleared = this.commitClear(shooter, chain, typeIds, left, right);
+    this.commitClear(shooter, chain, typeIds, left, right);
     shooter.combo += 1;
-    this.grantExp(shooter, cleared);
   }
 
   /** Apply special clear effects and remove balls. Returns count removed. */
@@ -591,6 +687,13 @@ export class GameSim {
   ): number {
     const effects = resolveClearEffects(typeIds, left, right);
     const removeSet = new Set(effects.remove);
+    const path = this.paths[player.seat];
+    for (const i of effects.remove) {
+      const b = balls[i];
+      if (!b) continue;
+      const pos = pointAt(path, b.dist);
+      this.spawnExpOrbCredit(player, pos.x, pos.y, b.typeId);
+    }
     const kept = balls.filter((_, i) => !removeSet.has(i));
     this.writeBalls(player, kept);
     this.mergeContacts(this.copyBalls(player));
@@ -602,6 +705,62 @@ export class GameSim {
       this.spawnVolunStones(player);
     }
     return effects.remove.length;
+  }
+
+  /** One authoritative credit per destroyed ball (synced id for client collect). */
+  private spawnExpOrbCredit(
+    owner: PlayerState,
+    x: number,
+    y: number,
+    typeId: string,
+  ): void {
+    const id = nanoid(8);
+    const credit = new ExpOrbCredit();
+    credit.id = id;
+    credit.ownerSessionId = owner.sessionId;
+    credit.x = x;
+    credit.y = y;
+    credit.color = expParticleColor(typeId);
+    this.state.expOrbs.push(credit);
+
+    const cannon = this.cannons[owner.seat];
+    const dist = Math.hypot(cannon.x - x, cannon.y - y);
+    // Block instant cheat-collect during scatter wait; flight is client-side only.
+    const readyDelay = EXP_PARTICLE_WAIT_SEC;
+    const flight = expParticleReadyDelaySec(dist) - EXP_PARTICLE_WAIT_SEC;
+    this.expOrbMeta.set(id, {
+      ownerSessionId: owner.sessionId,
+      readyAt: this.simTime + readyDelay,
+      expiresAt: this.simTime + readyDelay + Math.max(0, flight) + EXP_ORB_EXPIRE_SEC,
+    });
+  }
+
+  private tickExpiredExpOrbs(): void {
+    if (this.expOrbMeta.size === 0) return;
+    const expired: string[] = [];
+    for (const [id, meta] of this.expOrbMeta) {
+      if (meta.expiresAt <= this.simTime) expired.push(id);
+    }
+    for (const id of expired) this.consumeExpOrb(id);
+  }
+
+  private consumeExpOrb(orbId: string): boolean {
+    const meta = this.expOrbMeta.get(orbId);
+    if (!meta) return false;
+    this.expOrbMeta.delete(orbId);
+
+    const orbs = this.state.expOrbs;
+    for (let i = 0; i < orbs.length; i++) {
+      const orb = orbs.at(i);
+      if (orb && orb.id === orbId) {
+        orbs.splice(i, 1);
+        break;
+      }
+    }
+
+    const owner = this.state.players.get(meta.ownerSessionId);
+    if (owner) this.grantExp(owner, 1);
+    return true;
   }
 
   /** Push stones onto the opponent's chain mouth (ranked). */

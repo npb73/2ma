@@ -1,10 +1,15 @@
 import {
   UI,
-  WORLD_WIDTH,
-  WORLD_HEIGHT,
   createDefaultMap,
+  findMapAspect,
+  getMapAspect,
+  mirrorLane,
+  mirrorPointX,
   parseGameMap,
+  scaleLane,
   type GameMap,
+  type MapAspectId,
+  type MapBgColor,
   type Point,
 } from "@2ma/shared";
 
@@ -20,7 +25,6 @@ export type EditorState = {
   activeLane: number;
   selectedPoint: number | null;
   drag: DragTarget | null;
-  bgImage: HTMLImageElement | null;
   status: string;
   statusError: boolean;
 };
@@ -39,7 +43,6 @@ export function createEditorState(): EditorState {
     activeLane: 0,
     selectedPoint: null,
     drag: null,
-    bgImage: null,
     status: "Готово",
     statusError: false,
   };
@@ -58,16 +61,28 @@ export class MapEditor {
     this.ctx = ctx;
     this.state = createEditorState();
     this.listeners = listeners;
-    canvas.width = WORLD_WIDTH;
-    canvas.height = WORLD_HEIGHT;
+    this.resizeCanvas();
     this.bind();
-    void this.loadBackgroundImage(this.state.map.background);
     this.draw();
   }
 
   private notify(): void {
     this.listeners.onChange();
     this.draw();
+  }
+
+  private resizeCanvas(): void {
+    const { width, height } = this.state.map;
+    this.canvas.width = width;
+    this.canvas.height = height;
+  }
+
+  private worldW(): number {
+    return this.state.map.width;
+  }
+
+  private worldH(): number {
+    return this.state.map.height;
   }
 
   setStatus(msg: string, error = false): void {
@@ -85,18 +100,46 @@ export class MapEditor {
     this.notify();
   }
 
+  setBackground(color: MapBgColor): void {
+    this.state.map.background = color;
+    this.setStatus(`Фон: ${color}`);
+    this.notify();
+  }
+
+  setAspect(aspectId: MapAspectId): void {
+    const aspect = getMapAspect(aspectId);
+    const map = this.state.map;
+    if (map.width === aspect.width && map.height === aspect.height) return;
+
+    const sx = aspect.width / map.width;
+    const sy = aspect.height / map.height;
+    map.lanes = map.lanes.map((lane) => scaleLane(lane, sx, sy));
+    if (map.players === 2 && map.lanes[0]) {
+      map.lanes[1] = mirrorLane(map.lanes[0], aspect.width);
+    }
+    map.width = aspect.width;
+    map.height = aspect.height;
+    this.resizeCanvas();
+    this.setStatus(`Пропорции: ${aspect.label} (${aspect.width}×${aspect.height})`);
+    this.notify();
+  }
+
   setPlayers(players: 1 | 2): void {
     const map = this.state.map;
     if (map.players === players) return;
     if (players === 2 && map.lanes.length === 1) {
-      const dual = createDefaultMap(2);
-      map.lanes.push(dual.lanes[1]);
+      map.lanes.push(mirrorLane(map.lanes[0], map.width));
     } else if (players === 1 && map.lanes.length > 1) {
       map.lanes = [map.lanes[0]];
       this.state.activeLane = 0;
     }
     map.players = players;
     this.state.selectedPoint = null;
+    this.setStatus(
+      players === 2
+        ? "2 игрока — точки зеркалятся"
+        : "1 игрок",
+    );
     this.notify();
   }
 
@@ -108,41 +151,27 @@ export class MapEditor {
   }
 
   clearActivePath(): void {
-    const lane = this.state.map.lanes[this.state.activeLane];
-    if (!lane) return;
-    lane.path = [];
+    const map = this.state.map;
+    if (map.players === 2) {
+      for (const lane of map.lanes) lane.path = [];
+    } else {
+      const lane = map.lanes[this.state.activeLane];
+      if (!lane) return;
+      lane.path = [];
+    }
     this.state.selectedPoint = null;
     this.setStatus("Путь очищен");
     this.notify();
   }
 
-  async setBackgroundFromFile(file: File): Promise<void> {
-    const dataUrl = await readFileAsDataUrl(file);
-    this.state.map.background = dataUrl;
-    await this.loadBackgroundImage(dataUrl);
-    this.setStatus(`Фон: ${file.name}`);
-    this.notify();
-  }
-
-  clearBackground(): void {
-    this.state.map.background = null;
-    this.state.bgImage = null;
-    this.setStatus("Фон убран");
-    this.notify();
-  }
-
-  private async loadBackgroundImage(src: string | null): Promise<void> {
-    if (!src) {
-      this.state.bgImage = null;
-      return;
-    }
-    const img = new Image();
-    await new Promise<void>((resolve, reject) => {
-      img.onload = () => resolve();
-      img.onerror = () => reject(new Error("Не удалось загрузить фон"));
-      img.src = src;
-    });
-    this.state.bgImage = img;
+  /** Keep the opposite lane as a horizontal mirror of `sourceLane`. */
+  private syncMirrorFrom(sourceLane: number): void {
+    const map = this.state.map;
+    if (map.players !== 2) return;
+    const src = map.lanes[sourceLane];
+    const other = 1 - sourceLane;
+    if (!src || !map.lanes[other]) return;
+    map.lanes[other] = mirrorLane(src, map.width);
   }
 
   downloadMap(): void {
@@ -151,6 +180,9 @@ export class MapEditor {
       this.setStatus("У каждой линии нужно минимум 2 точки пути", true);
       this.notify();
       return;
+    }
+    if (map.players === 2) {
+      this.syncMirrorFrom(0);
     }
     const blob = new Blob([JSON.stringify(map, null, 2)], {
       type: "application/json",
@@ -178,10 +210,13 @@ export class MapEditor {
     try {
       const map = parseGameMap(raw);
       this.state.map = cloneMap(map);
+      if (map.players === 2) {
+        this.syncMirrorFrom(0);
+      }
       this.state.activeLane = 0;
       this.state.selectedPoint = null;
       this.state.drag = null;
-      await this.loadBackgroundImage(map.background);
+      this.resizeCanvas();
       this.setStatus(`Загружено: ${map.name}`);
       this.notify();
     } catch (e) {
@@ -190,10 +225,12 @@ export class MapEditor {
     }
   }
 
-  newMap(players: 1 | 2 = 1): void {
+  newMap(players: 1 | 2 = 1, aspectId?: MapAspectId): void {
+    const current = findMapAspect(this.state.map.width, this.state.map.height);
+    const aspect = aspectId ?? current?.id ?? "16:9";
     this.state = createEditorState();
-    this.state.map = createDefaultMap(players);
-    void this.loadBackgroundImage(null).then(() => this.notify());
+    this.state.map = createDefaultMap(players, aspect);
+    this.resizeCanvas();
     this.setStatus("Новая карта");
     this.notify();
   }
@@ -211,11 +248,11 @@ export class MapEditor {
 
   private worldFromClient(clientX: number, clientY: number): Point {
     const rect = this.canvas.getBoundingClientRect();
-    const x = ((clientX - rect.left) / rect.width) * WORLD_WIDTH;
-    const y = ((clientY - rect.top) / rect.height) * WORLD_HEIGHT;
+    const x = ((clientX - rect.left) / rect.width) * this.worldW();
+    const y = ((clientY - rect.top) / rect.height) * this.worldH();
     return {
-      x: clamp(x, 0, WORLD_WIDTH),
-      y: clamp(y, 0, WORLD_HEIGHT),
+      x: clamp(x, 0, this.worldW()),
+      y: clamp(y, 0, this.worldH()),
     };
   }
 
@@ -248,6 +285,7 @@ export class MapEditor {
         lane.path.length === 0 ? null : Math.min(index, lane.path.length - 1);
     }
     this.state.drag = null;
+    this.syncMirrorFrom(laneIdx);
     this.notify();
   }
 
@@ -271,12 +309,12 @@ export class MapEditor {
       dx = (dx / len) * 40;
       dy = (dy / len) * 40;
       next = {
-        x: Math.round(clamp(cur.x + dx, 0, WORLD_WIDTH)),
-        y: Math.round(clamp(cur.y + dy, 0, WORLD_HEIGHT)),
+        x: Math.round(clamp(cur.x + dx, 0, this.worldW())),
+        y: Math.round(clamp(cur.y + dy, 0, this.worldH())),
       };
     } else {
       next = {
-        x: Math.round(clamp(cur.x + 40, 0, WORLD_WIDTH)),
+        x: Math.round(clamp(cur.x + 40, 0, this.worldW())),
         y: Math.round(cur.y),
       };
     }
@@ -285,6 +323,7 @@ export class MapEditor {
     this.state.activeLane = laneIdx;
     this.state.selectedPoint = insertAt;
     this.state.drag = null;
+    this.syncMirrorFrom(laneIdx);
     this.notify();
   }
 
@@ -320,6 +359,7 @@ export class MapEditor {
       lane: this.state.activeLane,
       index: this.state.selectedPoint,
     };
+    this.syncMirrorFrom(this.state.activeLane);
     this.notify();
   }
 
@@ -345,12 +385,25 @@ export class MapEditor {
     } else {
       lane.path[drag.index] = { x, y };
     }
+    // Live-mirror during drag for 2p maps
+    if (this.state.map.players === 2) {
+      const other = this.state.map.lanes[1 - drag.lane];
+      if (other) {
+        if (drag.kind === "cannon") {
+          other.cannon = mirrorPointX({ x, y }, this.worldW());
+        } else if (other.path[drag.index]) {
+          other.path[drag.index] = mirrorPointX({ x, y }, this.worldW());
+        }
+      }
+    }
     this.draw();
   }
 
   private onPointerUp(e: PointerEvent): void {
     if (this.state.drag) {
+      const drag = this.state.drag;
       this.state.drag = null;
+      this.syncMirrorFrom(drag.lane);
       try {
         this.canvas.releasePointerCapture(e.pointerId);
       } catch {
@@ -372,22 +425,13 @@ export class MapEditor {
 
   draw(): void {
     const { ctx, state } = this;
-    const { map, bgImage, activeLane, selectedPoint } = state;
+    const { map, activeLane, selectedPoint } = state;
+    const w = map.width;
+    const h = map.height;
 
-    ctx.clearRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-
-    if (bgImage) {
-      ctx.drawImage(bgImage, 0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-    } else {
-      ctx.fillStyle = UI.bg;
-      ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-    }
-
-    // Dim overlay so paths stay readable on busy backgrounds
-    if (bgImage) {
-      ctx.fillStyle = "rgba(3, 7, 16, 0.25)";
-      ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-    }
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = map.background;
+    ctx.fillRect(0, 0, w, h);
 
     map.lanes.forEach((lane, i) => {
       const active = i === activeLane;
@@ -396,7 +440,12 @@ export class MapEditor {
 
     ctx.fillStyle = UI.textMuted;
     ctx.font = "12px sans-serif";
-    ctx.fillText(`${WORLD_WIDTH}×${WORLD_HEIGHT}`, 10, WORLD_HEIGHT - 10);
+    const aspect = findMapAspect(w, h);
+    ctx.fillText(
+      `${w}×${h}${aspect ? ` · ${aspect.label}` : ""}`,
+      10,
+      h - 10,
+    );
   }
 
   private drawLane(
@@ -492,13 +541,4 @@ function clamp(v: number, min: number, max: number): number {
 
 function dist(a: Point, b: Point): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
-}
-
-function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(reader.error ?? new Error("read failed"));
-    reader.readAsDataURL(file);
-  });
 }

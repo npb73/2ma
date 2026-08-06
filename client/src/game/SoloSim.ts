@@ -1,10 +1,13 @@
 import {
   BALL_RADIUS,
+  EXP_ORB_EXPIRE_SEC,
+  EXP_PARTICLE_WAIT_SEC,
   GAP_EPS,
   ICE_FREEZE_SEC,
   INITIAL_CHAIN,
   MAX_CHAIN,
   PATH_SPEED,
+  PROJECTILE_HIT_RADIUS,
   PROJECTILE_SPEED,
   ROLLBACK_PAUSE_SEC,
   ROLLBACK_RAMP_SEC,
@@ -15,7 +18,10 @@ import {
   buildPath,
   cannonSolidPool,
   expandMatchGroup,
+  expParticleColor,
+  expParticleReadyDelaySec,
   expToNextLevel,
+  firstProjectileHit,
   getSoloMap,
   initialBallPool,
   isBallTypeId,
@@ -29,6 +35,7 @@ import {
   type GameMap,
   type PathGeom,
   type Point,
+  type ProjectileHitTarget,
 } from "@2ma/shared";
 
 const DT = 1 / TICK_HZ;
@@ -52,6 +59,14 @@ export interface SoloProjectile {
   vy: number;
 }
 
+export interface SoloExpOrb {
+  id: string;
+  ownerSessionId: string;
+  x: number;
+  y: number;
+  color: string;
+}
+
 export interface SoloPlayer {
   sessionId: string;
   displayName: string;
@@ -73,6 +88,7 @@ export interface SoloSnapshot {
   phase: "playing" | "ended";
   players: SoloPlayer[];
   projectiles: SoloProjectile[];
+  expOrbs: SoloExpOrb[];
   resolvedShotIds: string[];
   score: number;
 }
@@ -80,6 +96,11 @@ export interface SoloSnapshot {
 interface FloatMotion {
   pause: number;
   rampT: number;
+}
+
+interface ExpOrbMeta {
+  readyAt: number;
+  expiresAt: number;
 }
 
 function nid(): string {
@@ -103,11 +124,15 @@ export class SoloSim {
   score = 0;
   player: SoloPlayer;
   projectiles: SoloProjectile[] = [];
+  expOrbs: SoloExpOrb[] = [];
   resolvedShotIds: string[] = [];
 
   private spawnAcc = 0;
+  private simTime = 0;
+  private expOrbMeta = new Map<string, ExpOrbMeta>();
   private floatMotion = new Map<string, FloatMotion>();
   private readonly cannonPool = cannonSolidPool();
+  private readonly clearPos = { x: 0, y: 0 };
 
   constructor(displayName = "Игрок", map: GameMap = getSoloMap()) {
     this.map = map;
@@ -155,8 +180,11 @@ export class SoloSim {
     this.player.freezeSec = 0;
     this.player.aim = 0;
     this.projectiles = [];
+    this.expOrbs = [];
     this.resolvedShotIds = [];
     this.spawnAcc = 0;
+    this.simTime = 0;
+    this.expOrbMeta.clear();
     this.floatMotion.clear();
     this.phase = "playing";
     this.score = 0;
@@ -175,6 +203,7 @@ export class SoloSim {
         },
       ],
       projectiles: this.projectiles.map((pr) => ({ ...pr })),
+      expOrbs: this.expOrbs.map((o) => ({ ...o })),
       resolvedShotIds: [...this.resolvedShotIds],
       score: this.score,
     };
@@ -226,11 +255,24 @@ export class SoloSim {
     return pickFromPool(pool, () => Math.random());
   }
 
+  /** Claim an orb by id (same rules as ranked collectExp). */
+  collectExp(orbId: string): boolean {
+    if (this.phase !== "playing") return false;
+    const id = sanitizeShotId(orbId);
+    if (!id) return false;
+    const meta = this.expOrbMeta.get(id);
+    if (!meta) return false;
+    if (meta.readyAt > this.simTime) return false;
+    return this.consumeExpOrb(id);
+  }
+
   tick(): void {
     if (this.phase !== "playing") return;
+    this.simTime += DT;
     this.advanceChain();
     this.tickStoneLifetimes();
     this.advanceProjectiles();
+    this.tickExpiredExpOrbs();
 
     if (this.player.chain.length === 0) return;
     const balls = this.sortChainInPlace();
@@ -255,6 +297,11 @@ export class SoloSim {
       return b.fuse > 0;
     });
     if (surviving.length !== balls.length) {
+      const expired = balls.filter((b) => isStone(b.typeId) && b.fuse <= 0);
+      for (const b of expired) {
+        pointAtPathInto(this.path, b.dist, this.clearPos);
+        this.spawnExpOrbCredit(this.clearPos.x, this.clearPos.y, b.typeId);
+      }
       this.player.chain = surviving;
       this.mergeContacts(this.sortChainInPlace());
     }
@@ -389,7 +436,11 @@ export class SoloSim {
     return ranges;
   }
 
-  private packFrom(balls: SoloBall[], from: number, to = balls.length - 1): void {
+  private packFrom(
+    balls: SoloBall[],
+    from: number,
+    to = balls.length - 1,
+  ): void {
     for (let i = from + 1; i <= to; i++) {
       const minDist = balls[i - 1].dist + DIAMETER;
       if (balls[i].dist < minDist) balls[i].dist = minDist;
@@ -444,48 +495,64 @@ export class SoloSim {
       if (clearedLeft < 0) break;
 
       const typeIds = balls.map((b) => b.typeId);
-      clearedTotal += this.commitClear(balls, typeIds, clearedLeft, clearedRight);
+      clearedTotal += this.commitClear(
+        balls,
+        typeIds,
+        clearedLeft,
+        clearedRight,
+      );
       break;
     }
     if (clearedTotal > 0) {
       this.player.combo += 1;
-      this.grantExp(clearedTotal);
     }
   }
 
   private advanceProjectiles(): void {
     const survivors: SoloProjectile[] = [];
     const balls = this.sortChainInPlace();
+    const targets: ProjectileHitTarget[] = [];
     const hitPos = { x: 0, y: 0 };
-    for (const proj of this.projectiles) {
-      proj.x += proj.vx * DT;
-      proj.y += proj.vy * DT;
+    for (const ball of balls) {
+      pointAtPathInto(this.path, ball.dist, hitPos);
+      targets.push({ x: hitPos.x, y: hitPos.y, dist: ball.dist });
+    }
 
-      if (proj.x < -50 || proj.x > 1330 || proj.y < -50 || proj.y > 770) {
+    const margin = 80;
+    const minX = -margin;
+    const maxX = this.map.width + margin;
+    const minY = -margin;
+    const maxY = this.map.height + margin;
+
+    for (const proj of this.projectiles) {
+      const x0 = proj.x;
+      const y0 = proj.y;
+      const x1 = x0 + proj.vx * DT;
+      const y1 = y0 + proj.vy * DT;
+
+      const hit = firstProjectileHit(
+        x0,
+        y0,
+        x1,
+        y1,
+        targets,
+        PROJECTILE_HIT_RADIUS,
+      );
+      if (hit) {
+        this.markResolved(proj.id);
+        this.insertAndMatch(hit.dist, proj.typeId);
+        continue;
+      }
+
+      proj.x = x1;
+      proj.y = y1;
+
+      if (proj.x < minX || proj.x > maxX || proj.y < minY || proj.y > maxY) {
         this.markResolved(proj.id);
         continue;
       }
 
-      let bestD = Infinity;
-      let hitDist = 0;
-      let hit = false;
-      for (const ball of balls) {
-        pointAtPathInto(this.path, ball.dist, hitPos);
-        const d = Math.hypot(hitPos.x - proj.x, hitPos.y - proj.y);
-        if (d <= BALL_RADIUS * 1.6 && d < bestD) {
-          bestD = d;
-          hitDist = ball.dist;
-          hit = true;
-        }
-      }
-
-      if (!hit) {
-        survivors.push(proj);
-        continue;
-      }
-
-      this.markResolved(proj.id);
-      this.insertAndMatch(hitDist, proj.typeId);
+      survivors.push(proj);
     }
     this.projectiles = survivors;
   }
@@ -551,7 +618,6 @@ export class SoloSim {
     const cleared = this.commitClear(balls, typeIds, left, right);
     this.score += cleared * 10 + this.player.combo * 5;
     this.player.combo += 1;
-    this.grantExp(cleared);
   }
 
   private commitClear(
@@ -562,6 +628,12 @@ export class SoloSim {
   ): number {
     const effects = resolveClearEffects(typeIds, left, right);
     const removeSet = new Set(effects.remove);
+    for (const i of effects.remove) {
+      const b = balls[i];
+      if (!b) continue;
+      pointAtPathInto(this.path, b.dist, this.clearPos);
+      this.spawnExpOrbCredit(this.clearPos.x, this.clearPos.y, b.typeId);
+    }
     this.player.chain = balls.filter((_, i) => !removeSet.has(i));
     this.mergeContacts(this.sortChainInPlace());
 
@@ -572,6 +644,41 @@ export class SoloSim {
       this.spawnVolunStones();
     }
     return effects.remove.length;
+  }
+
+  private spawnExpOrbCredit(x: number, y: number, typeId: string): void {
+    const id = nid();
+    this.expOrbs.push({
+      id,
+      ownerSessionId: this.sessionId,
+      x,
+      y,
+      color: expParticleColor(typeId),
+    });
+    const dist = Math.hypot(this.cannon.x - x, this.cannon.y - y);
+    const readyDelay = EXP_PARTICLE_WAIT_SEC;
+    const flight = expParticleReadyDelaySec(dist) - EXP_PARTICLE_WAIT_SEC;
+    this.expOrbMeta.set(id, {
+      readyAt: this.simTime + readyDelay,
+      expiresAt: this.simTime + readyDelay + Math.max(0, flight) + EXP_ORB_EXPIRE_SEC,
+    });
+  }
+
+  private tickExpiredExpOrbs(): void {
+    if (this.expOrbMeta.size === 0) return;
+    const expired: string[] = [];
+    for (const [id, meta] of this.expOrbMeta) {
+      if (meta.expiresAt <= this.simTime) expired.push(id);
+    }
+    for (const id of expired) this.consumeExpOrb(id);
+  }
+
+  private consumeExpOrb(orbId: string): boolean {
+    if (!this.expOrbMeta.has(orbId)) return false;
+    this.expOrbMeta.delete(orbId);
+    this.expOrbs = this.expOrbs.filter((o) => o.id !== orbId);
+    this.grantExp(1);
+    return true;
   }
 
   /** Solo: no opponent — stones land on the player's own chain. */
@@ -590,10 +697,10 @@ export class SoloSim {
     this.packFrom(balls, 0);
   }
 
-  private grantExp(cleared: number): void {
-    if (cleared <= 0) return;
+  private grantExp(amount: number): void {
+    if (amount <= 0) return;
     const p = this.player;
-    p.exp += cleared;
+    p.exp += amount;
     while (p.exp >= expToNextLevel(p.level)) {
       p.exp -= expToNextLevel(p.level);
       p.level += 1;

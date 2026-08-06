@@ -131,7 +131,19 @@ export function mountLevelUpUi(
     background: "rgba(3,7,16,.45)",
     borderRadius: "10px",
   });
+
+  const poolCounts = new Map<string, number>();
+  const poolOrder: string[] = [];
   for (const id of opts.pool) {
+    if (!poolCounts.has(id)) {
+      poolOrder.push(id);
+      poolCounts.set(id, 0);
+    }
+    poolCounts.set(id, (poolCounts.get(id) ?? 0) + 1);
+  }
+
+  for (const id of poolOrder) {
+    const count = poolCounts.get(id) ?? 1;
     const chip = el("div", {
       display: "flex",
       flexDirection: "column",
@@ -143,7 +155,52 @@ export function mountLevelUpUi(
       border: `1px solid ${UI.secondaryDark}`,
       minWidth: "64px",
     });
-    chip.append(ballSwatch(id, 28));
+
+    const stackWrap = el("div", {
+      position: "relative",
+      width: "40px",
+      height: "36px",
+      flexShrink: "0",
+    });
+
+    const layers = Math.min(3, count);
+    for (let i = layers - 1; i >= 0; i--) {
+      const sw = ballSwatch(id, 28);
+      sw.style.position = "absolute";
+      sw.style.left = `${i * 3}px`;
+      sw.style.top = `${(layers - 1 - i) * 2}px`;
+      sw.style.zIndex = String(i + 1);
+      stackWrap.append(sw);
+    }
+
+    if (count > 1) {
+      const badge = el(
+        "div",
+        {
+          position: "absolute",
+          right: "-4px",
+          bottom: "-2px",
+          zIndex: "10",
+          minWidth: "18px",
+          height: "18px",
+          padding: "0 4px",
+          borderRadius: "9px",
+          background: UI.accent,
+          color: UI.bg,
+          fontSize: "10px",
+          fontWeight: "800",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          boxSizing: "border-box",
+          border: `1px solid ${UI.secondaryDark}`,
+        },
+        `×${count}`,
+      );
+      stackWrap.append(badge);
+    }
+
+    chip.append(stackWrap);
     chip.append(
       el(
         "div",

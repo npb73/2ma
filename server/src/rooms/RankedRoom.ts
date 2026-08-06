@@ -1,4 +1,4 @@
-import { RATING_DELTA, TICK_HZ } from "@2ma/shared";
+import { DEFAULT_RANKED_MAP_ID, RATING_DELTA, TICK_HZ, getRankedMap } from "@2ma/shared";
 import { Room, type Client } from "@colyseus/core";
 import { applyMatchRating, getUserById } from "../db.js";
 import { verifyToken } from "../auth/jwt.js";
@@ -14,6 +14,7 @@ interface JoinOptions {
   isPrivate?: boolean;
   private?: boolean;
   roomCode?: string;
+  mapId?: string;
 }
 
 interface AuthUser {
@@ -30,7 +31,13 @@ export class RankedRoom extends Room<RankedState> {
 
   onCreate(options: JoinOptions): void {
     this.setState(new RankedState());
-    this.sim = new GameSim(this.state);
+    const mapId =
+      typeof options.mapId === "string" && options.mapId.trim()
+        ? options.mapId.trim()
+        : DEFAULT_RANKED_MAP_ID;
+    const map = getRankedMap(mapId);
+    this.state.mapId = map.id;
+    this.sim = new GameSim(this.state, map);
     this.isPrivate = Boolean(options.isPrivate ?? options.private);
     this.state.isPrivate = this.isPrivate;
     this.autoDispose = true;
@@ -41,6 +48,7 @@ export class RankedRoom extends Room<RankedState> {
     this.setMetadata({
       roomCode: code,
       isPrivate: this.isPrivate,
+      mapId: map.id,
       open: true,
     });
 
@@ -63,6 +71,12 @@ export class RankedRoom extends Room<RankedState> {
     this.onMessage("pickBall", (client, message: { typeId?: string }) => {
       if (typeof message?.typeId === "string") {
         this.sim.pickBall(client.sessionId, message.typeId);
+      }
+    });
+
+    this.onMessage("collectExp", (client, message: { id?: string }) => {
+      if (typeof message?.id === "string") {
+        this.sim.collectExp(client.sessionId, message.id);
       }
     });
 
@@ -104,6 +118,7 @@ export class RankedRoom extends Room<RankedState> {
       this.setMetadata({
         roomCode: this.state.roomCode,
         isPrivate: this.isPrivate,
+        mapId: this.state.mapId,
         open: false,
       });
       // Auto-ready both when second joins for smoother MVP flow

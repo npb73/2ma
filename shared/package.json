@@ -12,8 +12,10 @@
     }
   },
   "scripts": {
+    "maps:gen": "node scripts/gen-map-catalog.mjs",
+    "prebuild": "node scripts/gen-map-catalog.mjs",
     "build": "tsc && mkdir -p dist/maps && cp src/maps/*.json dist/maps/",
-    "dev": "tsc --watch"
+    "dev": "node scripts/gen-map-catalog.mjs --watch & tsc --watch"
   },
   "devDependencies": {
     "typescript": "^5.8.2"

@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "id": "map_msfvm4md_8iamga",
-  "name": "Одиночная",
+  "id": "ranked-classic",
+  "name": "Классика",
   "width": 1280,
   "height": 720,
   "players": 2,
-  "background": "/assets/maps/ranked-classic.jpg",
+  "background": "#2c1e31",
   "lanes": [
     {
       "path": [

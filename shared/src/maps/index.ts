@@ -1,18 +1,28 @@
 import type { GameMap, MapLane, Point } from "../map.js";
-import { RANKED_CLASSIC } from "./ranked-classic.js";
-import { SOLO_CLASSIC } from "./solo-classic.js";
+import { MAP_CATALOG } from "./catalog.gen.js";
 
-export { SOLO_CLASSIC } from "./solo-classic.js";
-export { RANKED_CLASSIC } from "./ranked-classic.js";
+export { MAP_CATALOG } from "./catalog.gen.js";
 
-/** All shipped maps, keyed by id. */
-export const MAP_CATALOG: Readonly<Record<string, GameMap>> = {
-  [SOLO_CLASSIC.id]: SOLO_CLASSIC,
-  [RANKED_CLASSIC.id]: RANKED_CLASSIC,
-};
+const PREFERRED_SOLO_ID = "solo-classic";
+const PREFERRED_RANKED_ID = "ranked-classic";
 
-export const DEFAULT_SOLO_MAP_ID = SOLO_CLASSIC.id;
-export const DEFAULT_RANKED_MAP_ID = RANKED_CLASSIC.id;
+function preferMapId(players: 1 | 2, preferred: string): string {
+  const preferredMap = MAP_CATALOG[preferred];
+  if (preferredMap && preferredMap.players === players) return preferred;
+  const first = Object.values(MAP_CATALOG).find((m) => m.players === players);
+  if (!first) {
+    throw new Error(`No maps with players=${players} in shared/src/maps/`);
+  }
+  return first.id;
+}
+
+export const DEFAULT_SOLO_MAP_ID = preferMapId(1, PREFERRED_SOLO_ID);
+export const DEFAULT_RANKED_MAP_ID = preferMapId(2, PREFERRED_RANKED_ID);
+
+/** @deprecated Prefer getSoloMap() / listMaps(1). Kept for older imports. */
+export const SOLO_CLASSIC: GameMap = MAP_CATALOG[DEFAULT_SOLO_MAP_ID]!;
+/** @deprecated Prefer getRankedMap() / listMaps(2). Kept for older imports. */
+export const RANKED_CLASSIC: GameMap = MAP_CATALOG[DEFAULT_RANKED_MAP_ID]!;
 
 export function getMap(id: string): GameMap {
   const map = MAP_CATALOG[id];

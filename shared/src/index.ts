@@ -65,6 +65,7 @@ export {
   matchColors,
   typesMatch,
   expandMatchGroup,
+  isMulticolorMatch,
   pickFromPool,
   rollLevelOffer,
   ballDisplayColors,
@@ -96,6 +97,8 @@ export const ROLLBACK_PAUSE_SEC = 1;
 /** Time to ease from 0 → ROLLBACK_SPEED after the pause. */
 export const ROLLBACK_RAMP_SEC = 0.65;
 export const PROJECTILE_SPEED = 620;
+/** Projectile center → chain-ball center hit distance. */
+export const PROJECTILE_HIT_RADIUS = BALL_RADIUS * 1.6;
 /** Balls cleared required to go from level 0 → 1. */
 export const BASE_LEVEL_EXP = 10;
 /** Each next level needs +10% more cleared balls than the previous. */
@@ -104,6 +107,23 @@ export const INITIAL_CHAIN = 18;
 export const MAX_CHAIN = 55;
 /** Spacing slack before two balls count as separate segments. */
 export const GAP_EPS = 2;
+
+export {
+  EXP_PARTICLE_WAIT_SEC,
+  EXP_PARTICLE_MIN,
+  EXP_PARTICLE_MAX,
+  EXP_PARTICLE_SCATTER_SPEED,
+  EXP_PARTICLE_ACCEL,
+  EXP_PARTICLE_MAX_SPEED,
+  EXP_PARTICLE_PICKUP_R,
+  EXP_PARTICLE_RADIUS,
+  EXP_ORB_EXPIRE_SEC,
+  rollExpParticleCount,
+  expParticleFlightSec,
+  expParticleReadyDelaySec,
+  expParticleColor,
+  expParticleScatterVelocity,
+} from "./expParticles.js";
 
 /** Exp (cleared balls) needed to advance from `level` to `level + 1`. */
 export function expToNextLevel(level: number): number {
@@ -116,6 +136,10 @@ export type { Point } from "./map.js";
 export {
   WORLD_WIDTH,
   WORLD_HEIGHT,
+  MAP_BG_PALETTE,
+  DEFAULT_MAP_BG,
+  MAP_ASPECTS,
+  DEFAULT_MAP_ASPECT_ID,
   PATH_A,
   PATH_B,
   CANNON_A,
@@ -125,8 +149,18 @@ export {
   parseGameMap,
   isPoint,
   isMapLane,
+  isMapBgColor,
+  normalizeHex,
+  getMapAspect,
+  findMapAspect,
+  mirrorPointX,
+  mirrorLane,
+  scaleLane,
   type MapLane,
   type GameMap,
+  type MapBgColor,
+  type MapAspect,
+  type MapAspectId,
 } from "./map.js";
 
 export {
@@ -153,10 +187,12 @@ export {
 } from "./path.js";
 
 export {
-  mulberry32,
-  createColorStream,
-  randomSeed,
-} from "./rng.js";
+  firstProjectileHit,
+  segmentCircleHitT,
+  type ProjectileHitTarget,
+} from "./projectileHit.js";
+
+export { mulberry32, createColorStream, randomSeed } from "./rng.js";
 
 export type RoomPhase = "lobby" | "playing" | "ended";
 

@@ -30,13 +30,19 @@ async function main(): Promise<void> {
         res.status(401).json({ error: "Missing token" });
         return;
       }
+      const mapId =
+        typeof req.body?.mapId === "string" && req.body.mapId.trim()
+          ? String(req.body.mapId).trim()
+          : undefined;
       const room = await matchMaker.createRoom("ranked", {
         token,
         isPrivate: true,
+        mapId,
       });
       res.json({
         roomId: room.roomId,
         roomCode: room.metadata?.roomCode,
+        mapId: room.metadata?.mapId,
       });
     } catch (err) {
       console.error("[match/create]", err);
@@ -64,7 +70,7 @@ async function main(): Promise<void> {
     transport: new WebSocketTransport({ server }),
   });
 
-  gameServer.define("ranked", RankedRoom).filterBy(["isPrivate"]);
+  gameServer.define("ranked", RankedRoom).filterBy(["isPrivate", "mapId"]);
 
   // Public queue rooms only — joinOrCreate with private:false
   // Private rooms are created via /match/create

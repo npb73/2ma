@@ -1,11 +1,14 @@
 import {
   BALL_RADIUS,
+  DEFAULT_RANKED_MAP_ID,
   UI,
   ballDisplayColors,
+  buildPath,
   expToNextLevel,
   getRankedMap,
   mapCannon,
   mapPath,
+  pointAtPathInto,
   type Point,
 } from "@2ma/shared";
 import Phaser from "phaser";
@@ -14,11 +17,7 @@ import type { PlayMode } from "../ui/lobby";
 import type { UserInfo } from "../auth";
 import { mountExpBar, mountLevelUpUi } from "../ui/levelUp";
 import { mountGraphicsSettings } from "../ui/graphicsSettings";
-import {
-  WORLD_HEIGHT,
-  WORLD_WIDTH,
-} from "../settings";
-import { AdaptiveQuality } from "./adaptiveQuality";
+import { AdaptiveQuality, setActiveWorldSize, syncGameToStage } from "./adaptiveQuality";
 import {
   CannonRecoil,
   MUZZLE_BALL_R,
@@ -28,8 +27,10 @@ import {
 } from "./cannonView";
 import { DistInterpolator, type BallSample } from "./interpolation";
 import { ProjectilePresenter } from "./projectiles";
+import { ExpOrbPresenter } from "./expOrbs";
 import {
   BallPainter,
+  BallHoverTip,
   preloadBallTextures,
   prepareBallTextures,
   setBallPipelineAllowed,
@@ -46,6 +47,7 @@ interface StartOptions {
   user: UserInfo;
   mode: Exclude<PlayMode, "solo">;
   code?: string;
+  mapId?: string;
 }
 
 interface BallView {
@@ -74,6 +76,7 @@ interface PlayerView {
 interface GameView {
   phase: string;
   roomCode: string;
+  mapId: string;
   winnerId: string;
   loserId: string;
   ratingDelta: number;
@@ -87,27 +90,14 @@ interface GameView {
     vx: number;
     vy: number;
   }[];
+  expOrbs: {
+    id: string;
+    ownerSessionId: string;
+    x: number;
+    y: number;
+    color: string;
+  }[];
   resolvedShotIds: string[];
-}
-
-function pointAtInto(points: Point[], dist: number, out: Point): Point {
-  let remaining = dist;
-  for (let i = 1; i < points.length; i++) {
-    const a = points[i - 1];
-    const b = points[i];
-    const len = Math.hypot(b.x - a.x, b.y - a.y);
-    if (remaining <= len) {
-      const t = len === 0 ? 0 : remaining / len;
-      out.x = a.x + (b.x - a.x) * t;
-      out.y = a.y + (b.y - a.y) * t;
-      return out;
-    }
-    remaining -= len;
-  }
-  const last = points[points.length - 1];
-  out.x = last.x;
-  out.y = last.y;
-  return out;
 }
 
 function asArray<T>(value: unknown): T[] {
@@ -135,6 +125,7 @@ function readState(room: Room): GameView {
   const s = room.state as {
     phase: string;
     roomCode: string;
+    mapId: string;
     winnerId: string;
     loserId: string;
     ratingDelta: number;
@@ -142,6 +133,7 @@ function readState(room: Room): GameView {
       forEach: (cb: (p: Record<string, unknown>, id: string) => void) => void;
     };
     projectiles: unknown;
+    expOrbs: unknown;
     resolvedShotIds: unknown;
   };
 
@@ -187,14 +179,25 @@ function readState(room: Room): GameView {
     vy: Number(p.vy),
   }));
 
+  const expOrbsRaw = asArray<Record<string, unknown>>(s.expOrbs);
+  const expOrbs = expOrbsRaw.map((p) => ({
+    id: String(p.id),
+    ownerSessionId: String(p.ownerSessionId ?? ""),
+    x: Number(p.x),
+    y: Number(p.y),
+    color: String(p.color ?? "#ffffe4"),
+  }));
+
   return {
     phase: s.phase,
     roomCode: s.roomCode,
+    mapId: String(s.mapId ?? ""),
     winnerId: s.winnerId,
     loserId: s.loserId,
     ratingDelta: s.ratingDelta,
     players,
     projectiles,
+    expOrbs,
     resolvedShotIds: asArray<string>(s.resolvedShotIds).map(String),
   };
 }
@@ -218,6 +221,58 @@ export async function startGame(
   opts: StartOptions,
 ): Promise<void> {
   root.innerHTML = "";
+  root.style.cssText = `
+    width:100%;height:100%;display:flex;align-items:center;justify-content:center;
+    background:${UI.bg};color:${UI.text};font-family:Segoe UI,system-ui,sans-serif;
+  `;
+  root.textContent = "Подключение…";
+
+  const client = new Client(WS_URL);
+  let room: Room;
+  const mapIdOpt = opts.mapId?.trim() || DEFAULT_RANKED_MAP_ID;
+
+  if (opts.mode === "create") {
+    const res = await fetch("/match/create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: opts.token, mapId: mapIdOpt }),
+    });
+    if (!res.ok) throw new Error("Не удалось создать комнату");
+    const data = (await res.json()) as { roomId: string; roomCode: string };
+    room = await client.joinById(data.roomId, {
+      token: opts.token,
+      isPrivate: true,
+      mapId: mapIdOpt,
+    });
+  } else if (opts.mode === "join") {
+    if (!opts.code) throw new Error("Введите код");
+    const res = await fetch("/match/join-code", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: opts.code }),
+    });
+    if (!res.ok) throw new Error("Комната не найдена");
+    const data = (await res.json()) as { roomId: string };
+    room = await client.joinById(data.roomId, {
+      token: opts.token,
+      isPrivate: true,
+    });
+  } else {
+    room = await client.joinOrCreate("ranked", {
+      token: opts.token,
+      isPrivate: false,
+      mapId: mapIdOpt,
+    });
+  }
+
+  const roomMapId = String(
+    (room.state as { mapId?: string }).mapId || mapIdOpt,
+  );
+  const map = getRankedMap(roomMapId);
+  setActiveWorldSize(map.width, map.height);
+
+  root.innerHTML = "";
+  root.style.cssText = "";
   const overlay = document.createElement("div");
   overlay.style.cssText = `
     position:absolute; inset:0; z-index:20; pointer-events:none;
@@ -243,14 +298,12 @@ export async function startGame(
   const host = document.createElement("div");
   host.style.cssText = `
     width:100%;height:100%;position:relative;overflow:hidden;
-    display:flex;align-items:center;justify-content:center;
     background:${UI.bg};
   `;
   const stage = document.createElement("div");
   stage.style.cssText = `
-    position:relative;
-    width:min(100vw, calc(100vh * 16 / 9));
-    height:min(100vh, calc(100vw * 9 / 16));
+    position:absolute; inset:0;
+    width:100%; height:100%;
     background:${UI.bg};
   `;
   const canvasMount = document.createElement("div");
@@ -261,41 +314,7 @@ export async function startGame(
   root.append(host);
 
   const expBar = mountExpBar(stage);
-
-  const client = new Client(WS_URL);
-  let room: Room;
-
-  if (opts.mode === "create") {
-    const res = await fetch("/match/create", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token: opts.token }),
-    });
-    if (!res.ok) throw new Error("Не удалось создать комнату");
-    const data = (await res.json()) as { roomId: string; roomCode: string };
-    room = await client.joinById(data.roomId, {
-      token: opts.token,
-      isPrivate: true,
-    });
-  } else if (opts.mode === "join") {
-    if (!opts.code) throw new Error("Введите код");
-    const res = await fetch("/match/join-code", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code: opts.code }),
-    });
-    if (!res.ok) throw new Error("Комната не найдена");
-    const data = (await res.json()) as { roomId: string };
-    room = await client.joinById(data.roomId, {
-      token: opts.token,
-      isPrivate: true,
-    });
-  } else {
-    room = await client.joinOrCreate("ranked", {
-      token: opts.token,
-      isPrivate: false,
-    });
-  }
+  const hoverTip = new BallHoverTip(stage);
 
   let lastOfferKey = "";
   let disposeLevelUi: (() => void) | null = null;
@@ -307,12 +326,13 @@ export async function startGame(
   let game: Phaser.Game | null = null;
   const distInterp = new DistInterpolator();
   const projectiles = new ProjectilePresenter();
+  projectiles.setWorldSize(map.width, map.height);
+  const expOrbs = new ExpOrbPresenter();
   const cannonRecoil = new CannonRecoil();
   const recoiledShots = new Set<string>();
   let lastFrameMs = performance.now();
-  const map = getRankedMap();
-  const pathA = mapPath(map, 0);
-  const pathB = mapPath(map, 1);
+  const pathA = buildPath(mapPath(map, 0));
+  const pathB = buildPath(mapPath(map, 1));
   const cannonA = mapCannon(map, 0);
   const cannonB = mapCannon(map, 1);
 
@@ -327,14 +347,28 @@ export async function startGame(
   const ballsByOwner = new Map<string, Point[]>();
   const hitPointPool: Point[] = [];
   let hitPointUsed = 0;
-  const drawPos = { x: 0, y: 0 };
+  /** One path sample per ball: hit targets + draw share these coords. */
+  const drawBalls: {
+    id: string;
+    typeId: string;
+    fuse: number;
+    x: number;
+    y: number;
+  }[] = [];
+  const seatSession: [string, string] = ["", ""];
   let lastCannonGfxKey = "";
 
-  let stageW = stage.clientWidth;
-  let stageH = stage.clientHeight;
+  let stageW = Math.max(1, stage.clientWidth);
+  let stageH = Math.max(1, stage.clientHeight);
+
+  const quality = new AdaptiveQuality();
+  const renderSize = quality.canvasSize(stageW, stageH);
+  const worldZoom = quality.worldZoomForCanvas(renderSize);
+
   const stageRo = new ResizeObserver(() => {
-    stageW = stage.clientWidth;
-    stageH = stage.clientHeight;
+    stageW = Math.max(1, stage.clientWidth);
+    stageH = Math.max(1, stage.clientHeight);
+    if (game?.isRunning) syncGameToStage(game, quality);
   });
   stageRo.observe(stage);
 
@@ -343,6 +377,8 @@ export async function startGame(
     leaving = true;
     window.removeEventListener("keydown", onEscape);
     graphicsUi.dispose();
+    hoverTip.dispose();
+    stageRo.disconnect();
     disposeLevelUi?.();
     setBallPipelineAllowed(true);
     await cleanupMatch(room, game);
@@ -357,10 +393,6 @@ export async function startGame(
     const cannon = Number(me.seat) === 0 ? cannonA : cannonB;
     return Math.atan2(pointer.worldY - cannon.y, pointer.worldX - cannon.x);
   };
-
-  const quality = new AdaptiveQuality();
-  const renderPreset = quality.preset;
-  const worldZoom = quality.worldZoom;
 
   const graphicsUi = mountGraphicsSettings(root, {
     onApply: () => {
@@ -378,8 +410,8 @@ export async function startGame(
 
   game = new Phaser.Game({
     type: Phaser.AUTO,
-    width: renderPreset.width,
-    height: renderPreset.height,
+    width: renderSize.width,
+    height: renderSize.height,
     parent: canvasMount,
     backgroundColor: UI.bg,
     banner: false,
@@ -390,6 +422,8 @@ export async function startGame(
     scale: {
       mode: Phaser.Scale.FIT,
       autoCenter: Phaser.Scale.CENTER_BOTH,
+      width: renderSize.width,
+      height: renderSize.height,
     },
     scene: {
       preload(this: Phaser.Scene) {
@@ -397,19 +431,20 @@ export async function startGame(
       },
       create(this: Phaser.Scene) {
         this.cameras.main.setZoom(worldZoom);
-        this.cameras.main.centerOn(WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
+        this.cameras.main.centerOn(map.width / 2, map.height / 2);
 
         prepareBallTextures(this);
         addMapBackground(this, map);
-        drawMapPath(this, pathA);
-        drawMapPath(this, pathB);
-        drawMapHole(this, pathA);
-        drawMapHole(this, pathB);
+        drawMapPath(this, pathA.points);
+        drawMapPath(this, pathB.points);
+        drawMapHole(this, pathA.points);
+        drawMapHole(this, pathB.points);
 
         const balls = new BallPainter(this, 2);
         const projs = new BallPainter(this, 3);
         const cannonBalls = new BallPainter(this, 4);
         const cannonGfx = this.add.graphics().setDepth(4);
+        const expGfx = this.add.graphics().setDepth(5);
 
         this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
           if (leaving || graphicsUi.isOpen() || room.state.phase !== "playing")
@@ -481,29 +516,45 @@ export async function startGame(
           distInterp.step(dtMs);
 
           for (const arr of ballsByOwner.values()) arr.length = 0;
+          seatSession[0] = "";
+          seatSession[1] = "";
           for (const p of view.players.values()) {
             if (!ballsByOwner.has(p.sessionId)) {
               ballsByOwner.set(p.sessionId, []);
             }
+            if (p.seat === 0 || p.seat === 1) {
+              seatSession[p.seat] = p.sessionId;
+            }
           }
           hitPointUsed = 0;
-          distInterp.forEach((_id, seat, _typeId, dist) => {
+          let drawCount = 0;
+          distInterp.forEach((id, seat, typeId, dist, fuse) => {
             const path = seat === 0 ? pathA : pathB;
-            for (const p of view.players.values()) {
-              if (p.seat !== seat) continue;
-              const arr = ballsByOwner.get(p.sessionId);
-              if (!arr) break;
-              let pt = hitPointPool[hitPointUsed];
-              if (!pt) {
-                pt = { x: 0, y: 0 };
-                hitPointPool[hitPointUsed] = pt;
-              }
-              hitPointUsed++;
-              pointAtInto(path, dist, pt);
-              arr.push(pt);
-              break;
+            const sessionId = seatSession[seat === 0 ? 0 : 1];
+            const arr = sessionId ? ballsByOwner.get(sessionId) : undefined;
+            let pt = hitPointPool[hitPointUsed];
+            if (!pt) {
+              pt = { x: 0, y: 0 };
+              hitPointPool[hitPointUsed] = pt;
             }
+            hitPointUsed++;
+            pointAtPathInto(path, dist, pt);
+            if (arr) arr.push(pt);
+
+            let db = drawBalls[drawCount];
+            if (!db) {
+              db = { id, typeId, fuse, x: pt.x, y: pt.y };
+              drawBalls[drawCount] = db;
+            } else {
+              db.id = id;
+              db.typeId = typeId;
+              db.fuse = fuse;
+              db.x = pt.x;
+              db.y = pt.y;
+            }
+            drawCount++;
           });
+          drawBalls.length = drawCount;
 
           projectiles.syncServer(
             view.projectiles,
@@ -525,7 +576,7 @@ export async function startGame(
           }
           projectiles.step(dtMs / 1000, ballsByOwner);
 
-          renderHud(hud, view, room.sessionId, lastHudKey, (key) => {
+          renderHud(hud, view, room.sessionId, map.name, lastHudKey, (key) => {
             lastHudKey = key;
           });
 
@@ -584,11 +635,24 @@ export async function startGame(
           projs.begin();
           cannonBalls.begin();
 
-          distInterp.forEach((id, seat, typeId, dist, fuse) => {
-            const path = seat === 0 ? pathA : pathB;
-            pointAtInto(path, dist, drawPos);
-            balls.draw(id, typeId, drawPos.x, drawPos.y, BALL_RADIUS, fuse);
+          for (let i = 0; i < drawBalls.length; i++) {
+            const b = drawBalls[i];
+            balls.draw(b.id, b.typeId, b.x, b.y, BALL_RADIUS, b.fuse);
+          }
+
+          expOrbs.syncCredits(view.expOrbs, (sid) => {
+            const p = view.players.get(sid);
+            if (!p) return null;
+            return p.seat === 0 ? cannonA : cannonB;
           });
+          const picked = expOrbs.step(dtMs / 1000);
+          for (const id of picked) {
+            // Only the owner may collect; opponent orbs are visual only here.
+            const credit = view.expOrbs.find((o) => o.id === id);
+            if (credit && credit.ownerSessionId === room.sessionId) {
+              room.send("collectExp", { id });
+            }
+          }
 
           let cannonGfxKey = "";
           let anyRecoil = false;
@@ -642,9 +706,26 @@ export async function startGame(
             projs.draw(id, typeId, x, y, BALL_RADIUS - 2);
           });
 
+          expOrbs.draw(expGfx);
+
           balls.end();
           projs.end();
           cannonBalls.end();
+
+          const ptr = this.input.activePointer;
+          hoverTip.update({
+            painters: [balls, projs, cannonBalls],
+            worldX: ptr.worldX,
+            worldY: ptr.worldY,
+            camera: this.cameras.main,
+            canvas: this.game.canvas,
+            now,
+            enabled:
+              !leaving &&
+              !graphicsUi.isOpen() &&
+              room.state.phase === "playing" &&
+              !(me && me.pendingOffer.length > 0),
+          });
         });
       },
     },
@@ -662,6 +743,7 @@ function renderHud(
   hud: HTMLElement,
   view: GameView,
   myId: string,
+  mapName: string,
   lastKey: string,
   setKey: (key: string) => void,
 ): void {
@@ -678,6 +760,8 @@ function renderHud(
   const key = [
     view.phase,
     view.roomCode,
+    view.mapId,
+    mapName,
     me?.rating,
     me?.combo,
     me?.level,
@@ -691,7 +775,7 @@ function renderHud(
 
   hud.innerHTML = `
     <div style="font-size:14px;line-height:1.5;background:rgba(4,21,40,.72);padding:10px 14px;border-radius:8px;display:inline-block">
-      <div>Код комнаты: <b style="color:${UI.accentHot}">${view.roomCode || "—"}</b> · ${view.phase} · ${getRankedMap().name}</div>
+      <div>Код комнаты: <b style="color:${UI.accentHot}">${view.roomCode || "—"}</b> · ${view.phase} · ${mapName}</div>
       <div>Вы: ${me?.displayName ?? "—"} ★${me?.rating ?? "—"} · комбо ${me?.combo ?? 0} · ур. ${me?.level ?? 0}</div>
       <div>Соперник: ${oppName} ★${oppRating}</div>
       <div style="color:${UI.secondary}">ЛКМ — выстрел · спавн ${me?.ballPool.length ?? 0}</div>

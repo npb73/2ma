@@ -5,7 +5,7 @@
   "width": 1280,
   "height": 720,
   "players": 1,
-  "background": null,
+  "background": "#10121c",
   "lanes": [
     {
       "path": [

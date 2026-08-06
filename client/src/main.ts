@@ -58,10 +58,11 @@ async function showLobby(): Promise<void> {
       clearSession();
       location.reload();
     },
-    onPlay: async (mode, code) => {
+    onPlay: async (mode, code, mapId) => {
       if (mode === "solo") {
         await startSoloGame(root, {
           displayName: session?.user?.displayName ?? "Игрок",
+          mapId,
           onExit: () => {
             void showLobby();
           },
@@ -74,6 +75,7 @@ async function showLobby(): Promise<void> {
         user: session.user!,
         mode,
         code,
+        mapId,
       });
     },
   });

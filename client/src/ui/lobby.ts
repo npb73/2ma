@@ -1,4 +1,9 @@
-import { UI } from "@2ma/shared";
+import {
+  DEFAULT_RANKED_MAP_ID,
+  DEFAULT_SOLO_MAP_ID,
+  UI,
+  listMaps,
+} from "@2ma/shared";
 import type { Session, UserInfo } from "../auth";
 import { saveSession } from "../auth";
 import { mountGraphicsSettings } from "./graphicsSettings";
@@ -9,7 +14,7 @@ interface LobbyOptions {
   session: Session | null;
   status: { yandexEnabled: boolean; devAuth: boolean };
   onLogout: () => void;
-  onPlay: (mode: PlayMode, code?: string) => Promise<void>;
+  onPlay: (mode: PlayMode, code?: string, mapId?: string) => Promise<void>;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -102,10 +107,66 @@ export function createLobbyUi(root: HTMLElement, opts: LobbyOptions): void {
     pointerEvents: "auto",
   });
 
+  const soloMaps = listMaps(1);
+  const rankedMaps = listMaps(2);
+
+  const makeMapSelect = (
+    maps: ReturnType<typeof listMaps>,
+    defaultId: string,
+  ): HTMLSelectElement => {
+    const select = el("select", {
+      padding: "8px 10px",
+      borderRadius: "8px",
+      border: `1px solid ${UI.secondaryDark}`,
+      background: UI.bgPanel,
+      color: UI.text,
+      fontSize: "14px",
+      minWidth: "180px",
+    }) as HTMLSelectElement;
+    for (const m of maps) {
+      const opt = document.createElement("option");
+      opt.value = m.id;
+      opt.textContent = m.name;
+      if (m.id === defaultId) opt.selected = true;
+      select.append(opt);
+    }
+    return select;
+  };
+
+  let soloMapSelect: HTMLSelectElement | null = null;
+  if (soloMaps.length > 0) {
+    const mapRow = el("div", {
+      display: "flex",
+      alignItems: "center",
+      gap: "8px",
+    });
+    mapRow.append(
+      el("span", { fontSize: "13px", color: UI.textMuted }, "Solo"),
+    );
+    soloMapSelect = makeMapSelect(soloMaps, DEFAULT_SOLO_MAP_ID);
+    mapRow.append(soloMapSelect);
+    actions.append(mapRow);
+  }
+
+  let rankedMapSelect: HTMLSelectElement | null = null;
+  if (rankedMaps.length > 0) {
+    const mapRow = el("div", {
+      display: "flex",
+      alignItems: "center",
+      gap: "8px",
+    });
+    mapRow.append(
+      el("span", { fontSize: "13px", color: UI.textMuted }, "1v1"),
+    );
+    rankedMapSelect = makeMapSelect(rankedMaps, DEFAULT_RANKED_MAP_ID);
+    mapRow.append(rankedMapSelect);
+    actions.append(mapRow);
+  }
+
   const soloBtn = button("Одиночная игра", async () => {
     status.textContent = "";
     try {
-      await opts.onPlay("solo");
+      await opts.onPlay("solo", undefined, soloMapSelect?.value);
     } catch (e) {
       status.textContent = String(e);
     }
@@ -115,7 +176,7 @@ export function createLobbyUi(root: HTMLElement, opts: LobbyOptions): void {
     if (!loggedIn) return;
     status.textContent = "Поиск…";
     try {
-      await opts.onPlay("queue");
+      await opts.onPlay("queue", undefined, rankedMapSelect?.value);
     } catch (e) {
       status.textContent = String(e);
     }
@@ -142,7 +203,7 @@ export function createLobbyUi(root: HTMLElement, opts: LobbyOptions): void {
     const createBtn = button("Создать комнату", async () => {
       status.textContent = "Создание комнаты…";
       try {
-        await opts.onPlay("create");
+        await opts.onPlay("create", undefined, rankedMapSelect?.value);
       } catch (e) {
         status.textContent = String(e);
       }

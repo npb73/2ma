@@ -16,7 +16,7 @@ export {
 } from "./constants.js";
 
 export { BALL_TYPES, getBallType, isBallTypeId } from "./catalog.js";
-export { matchColors, typesMatch, expandMatchGroup } from "./match.js";
+export { matchColors, typesMatch, expandMatchGroup, isMulticolorMatch } from "./match.js";
 export {
   cannonSolidPool,
   initialBallPool,

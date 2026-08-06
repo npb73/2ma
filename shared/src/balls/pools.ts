@@ -9,9 +9,17 @@ export function cannonSolidPool(): string[] {
   );
 }
 
-/** Starting chain spawn pool: one solid of each color. Level-ups append here. */
+const INITIAL_SOLIDS_PER_COLOR = 5;
+
+/** Starting chain spawn pool: 5 solids of each color. Level-ups append here. */
 export function initialBallPool(): string[] {
-  return cannonSolidPool();
+  const out: string[] = [];
+  for (let n = 0; n < INITIAL_SOLIDS_PER_COLOR; n++) {
+    for (let c = 0; c < COLOR_COUNT; c++) {
+      out.push(solidId(c as SolidColor));
+    }
+  }
+  return out;
 }
 
 /** Uniform pick from pool (each entry equal weight). */

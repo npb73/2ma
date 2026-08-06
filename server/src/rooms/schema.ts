@@ -20,6 +20,18 @@ export class ProjectileState extends Schema {
   @type("float32") vy: number = 0;
 }
 
+/**
+ * Authoritative exp-orb credit. Server creates on clear; client animates;
+ * collect only via matching id (anti-cheat).
+ */
+export class ExpOrbCredit extends Schema {
+  @type("string") id: string = "";
+  @type("string") ownerSessionId: string = "";
+  @type("float32") x: number = 0;
+  @type("float32") y: number = 0;
+  @type("string") color: string = "#ffffe4";
+}
+
 export class PlayerState extends Schema {
   @type("string") sessionId: string = "";
   @type("string") userId: string = "";
@@ -49,8 +61,12 @@ export class RankedState extends Schema {
   @type("string") phase: string = "lobby";
   @type("string") roomCode: string = "";
   @type("boolean") isPrivate: boolean = false;
+  /** Catalog map id (from shared/src/maps/*.json). */
+  @type("string") mapId: string = "";
   @type({ map: PlayerState }) players = new MapSchema<PlayerState>();
   @type([ProjectileState]) projectiles = new ArraySchema<ProjectileState>();
+  /** Pending exp orbs — client VFX + collectExp id check. */
+  @type([ExpOrbCredit]) expOrbs = new ArraySchema<ExpOrbCredit>();
   /**
    * Ring buffer of recently resolved (hit / off-screen) projectile ids.
    * Clients use this to despawn predicted local shots even when the

@@ -2,6 +2,7 @@ import { BALL_RADIUS } from "@2ma/shared";
 import Phaser from "phaser";
 
 import { drawBallType } from "./draw";
+import type { BallHit } from "./hoverTip";
 import { SolidBallLayer, solidColorOf } from "./solid";
 
 /**
@@ -12,6 +13,8 @@ export class BallPainter {
   private readonly gfx: Phaser.GameObjects.Graphics;
   private readonly solids: SolidBallLayer;
   private readonly seen = new Set<string>();
+  /** World-space hits from the last begin→end frame (for hover tips). */
+  readonly hits: BallHit[] = [];
 
   constructor(scene: Phaser.Scene, depth: number) {
     this.gfx = scene.add.graphics().setDepth(depth);
@@ -20,6 +23,7 @@ export class BallPainter {
 
   begin(): void {
     this.seen.clear();
+    this.hits.length = 0;
     this.gfx.clear();
   }
 
@@ -32,6 +36,7 @@ export class BallPainter {
     fuse = -1,
   ): void {
     this.seen.add(id);
+    this.hits.push({ id, typeId, x, y, radius, fuse });
     const color = solidColorOf(typeId);
     if (color === null || !this.solids.enabled) {
       this.solids.hide(id);

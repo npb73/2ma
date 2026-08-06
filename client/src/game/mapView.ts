@@ -1,79 +1,17 @@
 import type { GameMap } from "@2ma/shared";
-import { UI, WORLD_HEIGHT, WORLD_WIDTH } from "@2ma/shared";
+import { UI } from "@2ma/shared";
 import Phaser from "phaser";
 
 function hex(color: string): number {
   return Phaser.Display.Color.HexStringToColor(color).color;
 }
 
-function isDataUrl(src: string): boolean {
-  return src.startsWith("data:");
-}
-
-/** Solid fill or optional background (data URL, asset path, or http(s) URL). */
+/** Solid fill from map.background (palette hex). */
 export function addMapBackground(scene: Phaser.Scene, map: GameMap): void {
-  if (!map.background) {
-    scene.add
-      .rectangle(
-        WORLD_WIDTH / 2,
-        WORLD_HEIGHT / 2,
-        WORLD_WIDTH,
-        WORLD_HEIGHT,
-        hex(UI.bg),
-      )
-      .setDepth(-2);
-    return;
-  }
-
-  const key = `map_bg_${map.id}`;
-  const apply = (): void => {
-    scene.add
-      .image(0, 0, key)
-      .setOrigin(0, 0)
-      .setDisplaySize(WORLD_WIDTH, WORLD_HEIGHT)
-      .setDepth(-2);
-  };
-
-  if (scene.textures.exists(key)) {
-    apply();
-    return;
-  }
-
-  // Placeholder until the texture loads
+  const color = map.background || UI.bg;
   scene.add
-    .rectangle(
-      WORLD_WIDTH / 2,
-      WORLD_HEIGHT / 2,
-      WORLD_WIDTH,
-      WORLD_HEIGHT,
-      hex(UI.bg),
-    )
+    .rectangle(map.width / 2, map.height / 2, map.width, map.height, hex(color))
     .setDepth(-2);
-
-  const src = map.background;
-
-  // Asset / http paths: let Phaser loader handle decode off the critical path.
-  if (!isDataUrl(src)) {
-    scene.load.once(Phaser.Loader.Events.COMPLETE, () => {
-      if (!scene.sys || !scene.sys.isActive()) return;
-      apply();
-    });
-    if (!scene.textures.exists(key)) {
-      scene.load.image(key, src);
-      scene.load.start();
-    }
-    return;
-  }
-
-  const img = new Image();
-  img.onload = () => {
-    if (!scene.sys || !scene.sys.isActive()) return;
-    if (!scene.textures.exists(key)) {
-      scene.textures.addImage(key, img);
-    }
-    apply();
-  };
-  img.src = src;
 }
 
 export function drawMapPath(scene: Phaser.Scene, points: { x: number; y: number }[]): void {
