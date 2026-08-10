@@ -174,7 +174,7 @@ export function createLobbyUi(root: HTMLElement, opts: LobbyOptions): void {
 
   const queueBtn = button("Поиск игры", async () => {
     if (!loggedIn) return;
-    status.textContent = "Поиск…";
+    status.textContent = "";
     try {
       await opts.onPlay("queue", undefined, rankedMapSelect?.value);
     } catch (e) {

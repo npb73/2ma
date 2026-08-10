@@ -66,6 +66,9 @@ export {
   typesMatch,
   expandMatchGroup,
   isMulticolorMatch,
+  CHAIN_RUN_LENGTHS,
+  ChainTypeStream,
+  pickChainRunLength,
   pickFromPool,
   rollLevelOffer,
   ballDisplayColors,
@@ -89,7 +92,26 @@ export const STARTING_RATING = 1000;
 
 export const TICK_HZ = 20;
 export const BALL_RADIUS = 14;
-export const PATH_SPEED = 18; // px/s — push from spawn along the path
+/** Steady path push after the intro boost (px/s). */
+export const PATH_SPEED = 20;
+/** Path push for the first {@link PATH_SPEED_INTRO_HOLD_SEC} seconds (px/s). */
+export const PATH_SPEED_INTRO = 100;
+/** Hold intro speed this long after match start. */
+export const PATH_SPEED_INTRO_HOLD_SEC = 2;
+/** Then ease from intro → cruise over this many seconds. */
+export const PATH_SPEED_INTRO_RAMP_SEC = 3;
+
+/** Path push speed at `elapsedSec` since match start (intro boost → cruise). */
+export function pathSpeedAt(elapsedSec: number): number {
+  const t = Math.max(0, elapsedSec);
+  if (t <= PATH_SPEED_INTRO_HOLD_SEC) return PATH_SPEED_INTRO;
+  const u =
+    (t - PATH_SPEED_INTRO_HOLD_SEC) / Math.max(1e-6, PATH_SPEED_INTRO_RAMP_SEC);
+  if (u >= 1) return PATH_SPEED;
+  const s = u * u * (3 - 2 * u);
+  return PATH_SPEED_INTRO + (PATH_SPEED - PATH_SPEED_INTRO) * s;
+}
+
 /** Max speed of floating segments rolling back toward the train. */
 export const ROLLBACK_SPEED = 48;
 /** Floating segments wait this long before starting to roll back. */
@@ -104,9 +126,21 @@ export const BASE_LEVEL_EXP = 10;
 /** Each next level needs +10% more cleared balls than the previous. */
 export const LEVEL_EXP_GROWTH = 1.1;
 export const INITIAL_CHAIN = 18;
-export const MAX_CHAIN = 55;
+/**
+ * Absolute safety ceiling for balls on one chain (sync / memory).
+ * Gameplay spawn is also gated by mouth clearance and path length — this
+ * must stay above the longest ranked path (~73 packed balls) or spawn
+ * stops mid-match while the hole is still far away.
+ */
+export const MAX_CHAIN = 96;
 /** Spacing slack before two balls count as separate segments. */
 export const GAP_EPS = 2;
+
+/** Max balls that can pack on a path before the mouth is blocked. */
+export function chainCapacityForPath(pathTotal: number): number {
+  const packed = Math.floor(Math.max(0, pathTotal) / (BALL_RADIUS * 2));
+  return Math.min(MAX_CHAIN, packed + 2);
+}
 
 export {
   EXP_PARTICLE_WAIT_SEC,
@@ -118,6 +152,7 @@ export {
   EXP_PARTICLE_PICKUP_R,
   EXP_PARTICLE_RADIUS,
   EXP_ORB_EXPIRE_SEC,
+  EXP_ORB_VFX_CAP,
   rollExpParticleCount,
   expParticleFlightSec,
   expParticleReadyDelaySec,

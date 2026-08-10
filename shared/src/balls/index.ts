@@ -18,8 +18,11 @@ export {
 export { BALL_TYPES, getBallType, isBallTypeId } from "./catalog.js";
 export { matchColors, typesMatch, expandMatchGroup, isMulticolorMatch } from "./match.js";
 export {
+  CHAIN_RUN_LENGTHS,
+  ChainTypeStream,
   cannonSolidPool,
   initialBallPool,
+  pickChainRunLength,
   pickFromPool,
   rollLevelOffer,
 } from "./pools.js";

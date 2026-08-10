@@ -86,7 +86,7 @@ export class ExpOrbPresenter {
 
   /**
    * Advance motion. Returns orb ids that reached the cannon this frame
-   * (caller should collectExp / send collectExp).
+   * (caller may collectExp to despawn the VFX credit early).
    */
   step(dt: number): string[] {
     if (this.orbs.length === 0 || dt <= 0) return [];

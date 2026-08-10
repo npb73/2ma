@@ -22,6 +22,31 @@ export function initialBallPool(): string[] {
   return out;
 }
 
+/**
+ * Weighted run lengths for consecutive same-type chain balls.
+ * Picking uniformly from this list ≈ more short runs, rarer long ones.
+ */
+export const CHAIN_RUN_LENGTHS: readonly number[] = [
+  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 5, 6,
+];
+
+function sanitizeRunLengths(lengths: readonly number[]): number[] {
+  const cleaned = lengths
+    .map((n) => Math.floor(Number(n)))
+    .filter((n) => Number.isFinite(n) && n >= 1 && n <= 99);
+  return cleaned.length > 0 ? cleaned : [...CHAIN_RUN_LENGTHS];
+}
+
+/** Uniform pick from a run-length table (defaults to {@link CHAIN_RUN_LENGTHS}). */
+export function pickChainRunLength(
+  rng: () => number,
+  lengths: readonly number[] = CHAIN_RUN_LENGTHS,
+): number {
+  const table = lengths.length > 0 ? lengths : CHAIN_RUN_LENGTHS;
+  const i = Math.min(table.length - 1, Math.floor(rng() * table.length));
+  return table[i] ?? 1;
+}
+
 /** Uniform pick from pool (each entry equal weight). */
 export function pickFromPool(
   pool: readonly string[],
@@ -30,6 +55,96 @@ export function pickFromPool(
   if (pool.length === 0) return solidId(0);
   const i = Math.min(pool.length - 1, Math.floor(rng() * pool.length));
   return pool[i] ?? solidId(0);
+}
+
+/** Primary solid color of a ball type, or null if uncolored / wildcard. */
+function primaryColor(typeId: string): SolidColor | null {
+  const t = getBallType(typeId);
+  if (!t || t.colors.length === 0) return null;
+  return t.colors[0]!;
+}
+
+/** True if two types share the same primary color (or are the same id). */
+function sameSpawnColor(a: string, b: string): boolean {
+  const ca = primaryColor(a);
+  const cb = primaryColor(b);
+  if (ca == null || cb == null) return a === b;
+  return ca === cb;
+}
+
+/**
+ * Chain spawn stream: pick a type from the pool, then emit it for a run
+ * length drawn from the weighted table (specials always run length 1).
+ * Consecutive runs never share the same primary color.
+ */
+export class ChainTypeStream {
+  private currentType: string | null = null;
+  private remaining = 0;
+  private runLengths: number[] = [...CHAIN_RUN_LENGTHS];
+  /** Level-up picks forced to the front of the spawn ribbon (FIFO). */
+  private forced: string[] = [];
+  /** Last emitted type — next pool roll must differ in primary color. */
+  private lastTypeId: string | null = null;
+
+  reset(): void {
+    this.currentType = null;
+    this.remaining = 0;
+    this.forced.length = 0;
+    this.lastTypeId = null;
+  }
+
+  getRunLengths(): number[] {
+    return [...this.runLengths];
+  }
+
+  setRunLengths(lengths: readonly number[]): void {
+    this.runLengths = sanitizeRunLengths(lengths);
+    // Drop in-progress run so the next ball uses the new table.
+    this.currentType = null;
+    this.remaining = 0;
+  }
+
+  /**
+   * Queue a type to appear as the next chain ball(s), before normal pool rolls.
+   * Interrupts any in-progress solid run so the pick shows up ASAP.
+   */
+  enqueueNext(typeId: string): void {
+    this.forced.push(typeId);
+    this.currentType = null;
+    this.remaining = 0;
+  }
+
+  next(pool: readonly string[], rng: () => number): string {
+    if (this.forced.length > 0) {
+      const id = this.forced.shift()!;
+      this.lastTypeId = id;
+      return id;
+    }
+
+    if (this.remaining > 0 && this.currentType) {
+      this.remaining -= 1;
+      this.lastTypeId = this.currentType;
+      return this.currentType;
+    }
+
+    let typeId = pickFromPool(pool, rng);
+    let guard = 0;
+    while (
+      this.lastTypeId &&
+      sameSpawnColor(typeId, this.lastTypeId) &&
+      guard++ < 40
+    ) {
+      typeId = pickFromPool(pool, rng);
+    }
+
+    const kind = getBallType(typeId)?.kind;
+    const run =
+      kind === "solid" ? pickChainRunLength(rng, this.runLengths) : 1;
+    this.currentType = typeId;
+    this.remaining = Math.max(0, run - 1);
+    this.lastTypeId = typeId;
+    return typeId;
+  }
 }
 
 /**

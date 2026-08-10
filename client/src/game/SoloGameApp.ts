@@ -11,6 +11,7 @@ import {
 import Phaser from "phaser";
 import { mountExpBar, mountLevelUpUi } from "../ui/levelUp";
 import { mountGraphicsSettings } from "../ui/graphicsSettings";
+import { mountSoloDebug } from "../ui/soloDebug";
 import { AdaptiveQuality, setActiveWorldSize, syncGameToStage } from "./adaptiveQuality";
 import { DistInterpolator, type BallSample } from "./interpolation";
 import { ProjectilePresenter } from "./projectiles";
@@ -139,6 +140,7 @@ export async function startSoloGame(
     leaving = true;
     window.removeEventListener("keydown", onEscape);
     graphicsUi.dispose();
+    debugUi.dispose();
     hoverTip.dispose();
     stageRo.disconnect();
     disposeLevelUi?.();
@@ -152,7 +154,7 @@ export async function startSoloGame(
       quality.syncFromSettings(game);
     },
   });
-
+  const debugUi = mountSoloDebug(host, sim);
   const onEscape = (e: KeyboardEvent) => {
     if (e.key !== "Escape") return;
     e.preventDefault();
@@ -383,10 +385,7 @@ export async function startSoloGame(
             level: me.level,
             exp: me.exp,
             need: expToNextLevel(me.level),
-            cannonX: cannon.x,
-            cannonY: cannon.y,
-            stageW,
-            stageH,
+            levelUpOpen: me.pendingOffer.length > 0,
           });
 
           balls.begin();

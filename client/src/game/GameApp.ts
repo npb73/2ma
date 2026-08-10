@@ -48,6 +48,8 @@ interface StartOptions {
   mode: Exclude<PlayMode, "solo">;
   code?: string;
   mapId?: string;
+  /** Return to lobby / menu (no full page reload). */
+  onExit: () => void;
 }
 
 interface BallView {
@@ -216,6 +218,108 @@ async function cleanupMatch(
   }
 }
 
+/** Full-screen matchmaking wait. Resolves `cancelled` if user aborts. */
+function waitForOpponent(
+  root: HTMLElement,
+  room: Room,
+  mode: Exclude<PlayMode, "solo">,
+): Promise<{ cancelled: boolean }> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (cancelled: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve({ cancelled });
+    };
+
+    root.innerHTML = "";
+    root.style.cssText = `
+      width:100%;height:100%;display:flex;flex-direction:column;
+      align-items:center;justify-content:center;gap:16px;
+      background:radial-gradient(ellipse at top, ${UI.bgPanel}, ${UI.bg});
+      color:${UI.text};font-family:Segoe UI,system-ui,sans-serif;
+      box-sizing:border-box;padding:32px;
+    `;
+
+    const title = document.createElement("div");
+    title.style.cssText = `font-size:28px;color:${UI.accentHot};letter-spacing:0.04em;`;
+    title.textContent =
+      mode === "queue"
+        ? "Поиск игроков..."
+        : mode === "create"
+          ? "Ожидание соперника..."
+          : "Подключение…";
+
+    const detail = document.createElement("div");
+    detail.style.cssText = `font-size:15px;color:${UI.secondary};min-height:1.4em;`;
+    const syncDetail = () => {
+      const code = String((room.state as { roomCode?: string }).roomCode ?? "");
+      if (mode === "create" && code) {
+        detail.innerHTML = `Код комнаты: <b style="color:${UI.accentHot}">${code}</b>`;
+      } else if (mode === "queue") {
+        detail.textContent = "Ищем свободного соперника";
+      } else {
+        detail.textContent = "";
+      }
+    };
+    syncDetail();
+
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Отмена";
+    cancel.style.cssText = `
+      margin-top:12px;padding:10px 20px;border:none;border-radius:8px;
+      background:${UI.secondaryDark};color:${UI.text};cursor:pointer;font-size:15px;
+    `;
+    cancel.addEventListener("click", () => finish(true));
+
+    root.append(title, detail, cancel);
+
+    const check = () => {
+      syncDetail();
+      const phase = String((room.state as { phase?: string }).phase ?? "");
+      if (phase === "playing" || phase === "ended") finish(false);
+    };
+
+    room.onStateChange(() => check());
+    room.onLeave(() => finish(true));
+    check();
+  });
+}
+
+function showMatchResultScreen(
+  root: HTMLElement,
+  opts: { won: boolean; ratingDelta: number; onMenu: () => void },
+): void {
+  root.innerHTML = "";
+  root.style.cssText = `
+    width:100%;height:100%;display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:12px;
+    background:radial-gradient(ellipse at top, ${UI.bgPanel}, ${UI.bg});
+    color:${UI.text};font-family:Segoe UI,system-ui,sans-serif;
+    box-sizing:border-box;padding:32px;
+  `;
+
+  const title = document.createElement("div");
+  title.style.cssText = `font-size:42px;color:${opts.won ? UI.accentHot : UI.accent};margin-bottom:4px;`;
+  title.textContent = opts.won ? "Победа" : "Поражение";
+
+  const delta = document.createElement("div");
+  delta.style.cssText = `font-size:20px;color:${UI.textMuted};margin-bottom:20px;`;
+  delta.textContent = `${opts.won ? "+" : "−"}${opts.ratingDelta} рейтинга`;
+
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.textContent = "Вернуться в меню";
+  btn.style.cssText = `
+    padding:12px 22px;border:none;border-radius:8px;
+    background:${UI.secondaryDark};color:${UI.text};cursor:pointer;font-size:16px;
+  `;
+  btn.addEventListener("click", () => opts.onMenu());
+
+  root.append(title, delta, btn);
+}
+
 export async function startGame(
   root: HTMLElement,
   opts: StartOptions,
@@ -225,7 +329,8 @@ export async function startGame(
     width:100%;height:100%;display:flex;align-items:center;justify-content:center;
     background:${UI.bg};color:${UI.text};font-family:Segoe UI,system-ui,sans-serif;
   `;
-  root.textContent = "Подключение…";
+  root.textContent =
+    opts.mode === "queue" ? "Поиск игроков..." : "Подключение…";
 
   const client = new Client(WS_URL);
   let room: Room;
@@ -265,6 +370,37 @@ export async function startGame(
     });
   }
 
+  // Stay on matchmaking screen until both players are in and the match starts.
+  if (String(room.state.phase) !== "playing" && String(room.state.phase) !== "ended") {
+    const { cancelled } = await waitForOpponent(root, room, opts.mode);
+    if (cancelled) {
+      try {
+        await room.leave(true);
+      } catch {
+        /* ignore */
+      }
+      opts.onExit();
+      return;
+    }
+  }
+
+  if (String(room.state.phase) === "ended") {
+    const view = readState(room);
+    const won = view.winnerId === room.sessionId;
+    const delta = view.ratingDelta;
+    try {
+      await room.leave(true);
+    } catch {
+      /* ignore */
+    }
+    showMatchResultScreen(root, {
+      won,
+      ratingDelta: delta,
+      onMenu: opts.onExit,
+    });
+    return;
+  }
+
   const roomMapId = String(
     (room.state as { mapId?: string }).mapId || mapIdOpt,
   );
@@ -286,14 +422,7 @@ export async function startGame(
     align-items:center; justify-content:center; z-index:25;
     background:rgba(3,7,16,.55);
   `;
-  const resultPanel = document.createElement("div");
-  resultPanel.style.cssText = `
-    position:absolute; left:50%; top:40%; transform:translate(-50%,-50%);
-    display:none; pointer-events:auto; text-align:center; background:${UI.bgPanel};
-    padding:28px 36px; border-radius:12px; border:1px solid ${UI.secondaryDark};
-    z-index:30;
-  `;
-  overlay.append(hud, levelPanel, resultPanel);
+  overlay.append(hud, levelPanel);
 
   const host = document.createElement("div");
   host.style.cssText = `
@@ -319,10 +448,10 @@ export async function startGame(
   let lastOfferKey = "";
   let disposeLevelUi: (() => void) | null = null;
   let lastHudKey = "";
-  let resultShownFor = "";
   let lastAimSent = 0;
   let localAim: number | null = null;
   let leaving = false;
+  let matchEndHandled = false;
   let game: Phaser.Game | null = null;
   const distInterp = new DistInterpolator();
   const projectiles = new ProjectilePresenter();
@@ -372,19 +501,6 @@ export async function startGame(
   });
   stageRo.observe(stage);
 
-  const returnToLobby = async (): Promise<void> => {
-    if (leaving) return;
-    leaving = true;
-    window.removeEventListener("keydown", onEscape);
-    graphicsUi.dispose();
-    hoverTip.dispose();
-    stageRo.disconnect();
-    disposeLevelUi?.();
-    setBallPipelineAllowed(true);
-    await cleanupMatch(room, game);
-    location.reload();
-  };
-
   const aimFromPointer = (pointer: Phaser.Input.Pointer): number | null => {
     const me = room.state.players.get(room.sessionId) as
       | { seat?: number }
@@ -407,6 +523,28 @@ export async function startGame(
     graphicsUi.toggle();
   };
   window.addEventListener("keydown", onEscape);
+
+  const handleMatchEnd = (view: GameView): void => {
+    if (matchEndHandled || leaving) return;
+    matchEndHandled = true;
+    leaving = true;
+    const won = view.winnerId === room.sessionId;
+    const ratingDelta = view.ratingDelta;
+    window.removeEventListener("keydown", onEscape);
+    graphicsUi.dispose();
+    hoverTip.dispose();
+    stageRo.disconnect();
+    disposeLevelUi?.();
+    setBallPipelineAllowed(true);
+    void (async () => {
+      await cleanupMatch(room, game);
+      showMatchResultScreen(root, {
+        won,
+        ratingDelta,
+        onMenu: opts.onExit,
+      });
+    })();
+  };
 
   game = new Phaser.Game({
     type: Phaser.AUTO,
@@ -607,27 +745,17 @@ export async function startGame(
             levelPanel.style.display = "none";
           }
 
-          renderResult(
-            resultPanel,
-            view,
-            room.sessionId,
-            resultShownFor,
-            (key) => {
-              resultShownFor = key;
-            },
-            returnToLobby,
-          );
+          if (view.phase === "ended") {
+            handleMatchEnd(view);
+            return;
+          }
 
           if (me) {
-            const cannon = me.seat === 0 ? cannonA : cannonB;
             expBar.update({
               level: me.level,
               exp: me.exp,
               need: expToNextLevel(me.level),
-              cannonX: cannon.x,
-              cannonY: cannon.y,
-              stageW,
-              stageH,
+              levelUpOpen: me.pendingOffer.length > 0,
             });
           }
 
@@ -781,36 +909,4 @@ function renderHud(
       <div style="color:${UI.secondary}">ЛКМ — выстрел · спавн ${me?.ballPool.length ?? 0}</div>
     </div>
   `;
-}
-
-function renderResult(
-  panel: HTMLElement,
-  view: GameView,
-  myId: string,
-  shownFor: string,
-  setShownFor: (key: string) => void,
-  onBack: () => void,
-): void {
-  if (view.phase !== "ended") {
-    if (panel.style.display !== "none") panel.style.display = "none";
-    if (shownFor) setShownFor("");
-    return;
-  }
-
-  const key = `${view.winnerId}:${view.loserId}:${view.ratingDelta}`;
-  if (key === shownFor && panel.style.display === "block") return;
-  setShownFor(key);
-
-  const won = view.winnerId === myId;
-  panel.style.display = "block";
-  panel.innerHTML = `
-    <div style="font-size:28px;color:${won ? UI.accentHot : UI.accent};margin-bottom:8px">${won ? "Победа" : "Поражение"}</div>
-    <div style="font-size:18px;margin-bottom:16px">${won ? "+" : "−"}${view.ratingDelta} рейтинга</div>
-    <button type="button" id="back-lobby" style="padding:10px 16px;border:none;border-radius:8px;background:${UI.secondaryDark};color:${UI.text};cursor:pointer">В лобби</button>
-  `;
-  panel.querySelector("#back-lobby")?.addEventListener("click", (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    onBack();
-  });
 }

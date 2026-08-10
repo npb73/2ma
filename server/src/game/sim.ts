@@ -1,12 +1,12 @@
 import {
   BALL_RADIUS,
   EXP_ORB_EXPIRE_SEC,
+  EXP_ORB_VFX_CAP,
   EXP_PARTICLE_WAIT_SEC,
   GAP_EPS,
   ICE_FREEZE_SEC,
   INITIAL_CHAIN,
-  MAX_CHAIN,
-  PATH_SPEED,
+  pathSpeedAt,
   PROJECTILE_HIT_RADIUS,
   PROJECTILE_SPEED,
   ROLLBACK_PAUSE_SEC,
@@ -16,6 +16,8 @@ import {
   TICK_HZ,
   VOLUN_STONE_COUNT,
   cannonSolidPool,
+  chainCapacityForPath,
+  ChainTypeStream,
   expParticleColor,
   expParticleReadyDelaySec,
   expandMatchGroup,
@@ -31,7 +33,6 @@ import {
   resolveClearEffects,
   rollLevelOffer,
   spawnStoneFuse,
-  typesMatch,
   type GameMap,
   type Point,
   type ProjectileHitTarget,
@@ -103,6 +104,11 @@ export class GameSim {
   private expOrbMeta = new Map<string, ExpOrbMeta>();
   private floatMotion = new Map<string, Map<string, FloatMotion>>();
   private readonly cannonPool = cannonSolidPool();
+  /** Per-seat run-length streams for chain spawn (solids come in batches). */
+  private readonly chainStreams: [ChainTypeStream, ChainTypeStream] = [
+    new ChainTypeStream(),
+    new ChainTypeStream(),
+  ];
   /** Reused hit targets per seat for projectile sweeps (avoid per-proj alloc). */
   private readonly projTargets: [ProjectileHitTarget[], ProjectileHitTarget[]] = [
     [],
@@ -134,9 +140,10 @@ export class GameSim {
     return null;
   }
 
-  /** Chain spawn: weighted pick from the player's spawn pool. */
+  /** Chain spawn: run-length batches from the player's spawn pool. */
   private nextChainType(player: PlayerState): string {
-    return pickFromPool(poolOf(player), () => Math.random());
+    const seat = player.seat === 0 ? 0 : 1;
+    return this.chainStreams[seat].next(poolOf(player), () => Math.random());
   }
 
   /** Cannon ammo: fixed solids only (purchases never affect the cannon). */
@@ -154,6 +161,8 @@ export class GameSim {
   }
 
   initChains(): void {
+    this.chainStreams[0].reset();
+    this.chainStreams[1].reset();
     for (const [, player] of this.state.players) {
       const startPool = initialBallPool();
       setPool(player, startPool);
@@ -221,11 +230,13 @@ export class GameSim {
     pool.push(typeId);
     setPool(p, pool);
     setOffer(p, []);
+    const seat = p.seat === 0 ? 0 : 1;
+    this.chainStreams[seat].enqueueNext(typeId);
     this.flushOfferDebt(p);
   }
 
   /**
-   * Client claims an exp orb by id. Returns true if granted.
+   * Client claims an exp orb by id (despawn VFX only — exp granted on clear).
    * Rejects unknown / foreign / not-yet-ready ids.
    */
   collectExp(sessionId: string, orbId: string): boolean {
@@ -284,10 +295,13 @@ export class GameSim {
           (b) => isStone(b.typeId) && b.fuse <= 0,
         );
         const path = this.paths[p.seat];
+        const vfx: { x: number; y: number; typeId: string }[] = [];
         for (const b of expired) {
           const pos = pointAt(path, b.dist);
-          this.spawnExpOrbCredit(p, pos.x, pos.y, b.typeId);
+          vfx.push({ x: pos.x, y: pos.y, typeId: b.typeId });
         }
+        this.grantExp(p, expired.length);
+        this.spawnExpOrbVfxBatch(p, vfx);
         this.writeBalls(p, surviving);
         this.mergeContacts(this.copyBalls(p));
       }
@@ -302,24 +316,28 @@ export class GameSim {
       }
 
       const path = this.paths[p.seat];
-      const speed = PATH_SPEED;
+      const speed = pathSpeedAt(this.simTime);
       let balls = this.copyBalls(p);
 
       if (balls.length > 0) {
         // Mutates BallState.dist in place — no ArraySchema rewrite.
-        const stepped = this.stepTrainPhysics(p, balls, path, speed);
-        balls = stepped.balls;
-
-        if (stepped.joinAt.length > 0) {
-          this.resolveJoinMatches(p, stepped.joinAt);
-          balls = this.copyBalls(p);
-        }
+        // Joining floating segments only packs — never auto-clears.
+        // Combos clear only via player insert (insertAndMatch).
+        this.stepTrainPhysics(p, balls, path, speed);
+        balls = this.copyBalls(p);
       }
 
-      this.spawnAcc[p.seat] += speed * DT;
-      while (this.spawnAcc[p.seat] >= DIAMETER && balls.length < MAX_CHAIN) {
+      // Cap debt to one ball so clears cannot burst-fill the chain in one tick.
+      this.spawnAcc[p.seat] = Math.min(
+        this.spawnAcc[p.seat] + speed * DT,
+        DIAMETER,
+      );
+      const cap = chainCapacityForPath(path.total);
+      while (this.spawnAcc[p.seat] >= DIAMETER && balls.length < cap) {
         const back = balls[0];
         // Fixed entrance: only spawn when the rear has cleared the mouth.
+        // This is the natural Zuma limit — spawn resumes as the train moves
+        // and continues until a ball reaches the hole (match end).
         if (back && back.dist < DIAMETER) break;
         this.spawnAcc[p.seat] -= DIAMETER;
         const newBall = this.makeBall(this.nextChainType(p), 0);
@@ -451,56 +469,6 @@ export class GameSim {
       }
     }
     return balls;
-  }
-
-  /**
-   * After floating segments collide, clear a color group only if the match
-   * spans a join seam. Spawned same-color runs that were already contiguous
-   * must stay until the player inserts a completing ball.
-   */
-  private resolveJoinMatches(player: PlayerState, joinAt: number[]): void {
-    if (joinAt.length === 0) return;
-    let seams = [...joinAt];
-    let guard = 0;
-    let clearedTotal = 0;
-    while (guard++ < 8 && seams.length > 0) {
-      const balls = this.copyBalls(player);
-      if (balls.length < 3) break;
-
-      let clearedLeft = -1;
-      let clearedRight = -1;
-      for (const seam of seams) {
-        if (seam <= 0 || seam >= balls.length) continue;
-        if (balls[seam].dist - balls[seam - 1].dist > CONTACT) continue;
-        if (!typesMatch(balls[seam - 1].typeId, balls[seam].typeId)) continue;
-
-        const typeIds = balls.map((b) => b.typeId);
-        const dists = balls.map((b) => b.dist);
-        const [left, right] = expandMatchGroup(typeIds, dists, seam, CONTACT);
-        if (left >= seam || right < seam) continue;
-        if (right - left + 1 < 3) continue;
-
-        clearedLeft = left;
-        clearedRight = right;
-        break;
-      }
-
-      if (clearedLeft < 0) break;
-
-      const typeIds = balls.map((b) => b.typeId);
-      clearedTotal += this.commitClear(
-        player,
-        balls,
-        typeIds,
-        clearedLeft,
-        clearedRight,
-      );
-      // Specials can wipe non-contiguous ranges — stop after one wave.
-      break;
-    }
-    if (clearedTotal > 0) {
-      player.combo += 1;
-    }
   }
 
   /** Sorted view of chain refs (same BallState instances as in the schema). */
@@ -688,12 +656,17 @@ export class GameSim {
     const effects = resolveClearEffects(typeIds, left, right);
     const removeSet = new Set(effects.remove);
     const path = this.paths[player.seat];
+    const vfx: { x: number; y: number; typeId: string }[] = [];
     for (const i of effects.remove) {
       const b = balls[i];
       if (!b) continue;
       const pos = pointAt(path, b.dist);
-      this.spawnExpOrbCredit(player, pos.x, pos.y, b.typeId);
+      vfx.push({ x: pos.x, y: pos.y, typeId: b.typeId });
     }
+    const removed = effects.remove.length;
+    this.grantExp(player, removed);
+    this.spawnExpOrbVfxBatch(player, vfx);
+
     const kept = balls.filter((_, i) => !removeSet.has(i));
     this.writeBalls(player, kept);
     this.mergeContacts(this.copyBalls(player));
@@ -704,10 +677,32 @@ export class GameSim {
     if (effects.volun) {
       this.spawnVolunStones(player);
     }
-    return effects.remove.length;
+    return removed;
   }
 
-  /** One authoritative credit per destroyed ball (synced id for client collect). */
+  /**
+   * Synced VFX credits only (exp already granted). Caps count to avoid
+   * Colyseus patch storms on plasma / mass clears.
+   */
+  private spawnExpOrbVfxBatch(
+    owner: PlayerState,
+    items: { x: number; y: number; typeId: string }[],
+  ): void {
+    if (items.length === 0) return;
+    const n = Math.min(items.length, EXP_ORB_VFX_CAP);
+    for (let i = 0; i < n; i++) {
+      const idx =
+        items.length <= n
+          ? i
+          : n === 1
+            ? 0
+            : Math.floor((i * (items.length - 1)) / (n - 1));
+      const it = items[idx]!;
+      this.spawnExpOrbCredit(owner, it.x, it.y, it.typeId);
+    }
+  }
+
+  /** One VFX credit (synced). Collect/expire only despawn — no exp grant. */
   private spawnExpOrbCredit(
     owner: PlayerState,
     x: number,
@@ -725,13 +720,13 @@ export class GameSim {
 
     const cannon = this.cannons[owner.seat];
     const dist = Math.hypot(cannon.x - x, cannon.y - y);
-    // Block instant cheat-collect during scatter wait; flight is client-side only.
     const readyDelay = EXP_PARTICLE_WAIT_SEC;
     const flight = expParticleReadyDelaySec(dist) - EXP_PARTICLE_WAIT_SEC;
     this.expOrbMeta.set(id, {
       ownerSessionId: owner.sessionId,
       readyAt: this.simTime + readyDelay,
-      expiresAt: this.simTime + readyDelay + Math.max(0, flight) + EXP_ORB_EXPIRE_SEC,
+      expiresAt:
+        this.simTime + readyDelay + Math.max(0, flight) + EXP_ORB_EXPIRE_SEC,
     });
   }
 
@@ -744,6 +739,7 @@ export class GameSim {
     for (const id of expired) this.consumeExpOrb(id);
   }
 
+  /** Despawn a VFX credit. Exp was already granted on clear. */
   private consumeExpOrb(orbId: string): boolean {
     const meta = this.expOrbMeta.get(orbId);
     if (!meta) return false;
@@ -757,26 +753,23 @@ export class GameSim {
         break;
       }
     }
-
-    const owner = this.state.players.get(meta.ownerSessionId);
-    if (owner) this.grantExp(owner, 1);
     return true;
   }
 
   /** Push stones onto the opponent's chain mouth (ranked). */
   private spawnVolunStones(source: PlayerState): void {
-    let target: PlayerState | null = null;
-    for (const [, p] of this.state.players) {
-      if (p.sessionId !== source.sessionId) {
-        target = p;
-        break;
-      }
-    }
-    if (!target) return;
+    let found: PlayerState | undefined;
+    this.state.players.forEach((p, id) => {
+      if (found) return;
+      if (id !== source.sessionId) found = p;
+    });
+    if (!found) return;
+    const target = found;
 
-    let balls = this.copyBalls(target);
+    const balls = this.copyBalls(target);
+    const cap = chainCapacityForPath(this.paths[target.seat].total);
     for (let i = 0; i < VOLUN_STONE_COUNT; i++) {
-      if (balls.length >= MAX_CHAIN) break;
+      if (balls.length >= cap) break;
       for (const b of balls) b.dist += DIAMETER;
       balls.unshift(this.makeBall(STONE_TYPE_ID, 0));
     }

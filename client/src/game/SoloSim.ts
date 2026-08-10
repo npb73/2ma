@@ -1,12 +1,12 @@
 import {
   BALL_RADIUS,
   EXP_ORB_EXPIRE_SEC,
+  EXP_ORB_VFX_CAP,
   EXP_PARTICLE_WAIT_SEC,
   GAP_EPS,
   ICE_FREEZE_SEC,
   INITIAL_CHAIN,
-  MAX_CHAIN,
-  PATH_SPEED,
+  pathSpeedAt,
   PROJECTILE_HIT_RADIUS,
   PROJECTILE_SPEED,
   ROLLBACK_PAUSE_SEC,
@@ -17,6 +17,8 @@ import {
   VOLUN_STONE_COUNT,
   buildPath,
   cannonSolidPool,
+  chainCapacityForPath,
+  ChainTypeStream,
   expandMatchGroup,
   expParticleColor,
   expParticleReadyDelaySec,
@@ -31,7 +33,6 @@ import {
   resolveClearEffects,
   rollLevelOffer,
   spawnStoneFuse,
-  typesMatch,
   type GameMap,
   type PathGeom,
   type Point,
@@ -132,7 +133,10 @@ export class SoloSim {
   private expOrbMeta = new Map<string, ExpOrbMeta>();
   private floatMotion = new Map<string, FloatMotion>();
   private readonly cannonPool = cannonSolidPool();
+  private readonly chainStream = new ChainTypeStream();
   private readonly clearPos = { x: 0, y: 0 };
+  /** When set, ignores intro curve (solo debug). */
+  private speedOverride: number | null = null;
 
   constructor(displayName = "Игрок", map: GameMap = getSoloMap()) {
     this.map = map;
@@ -159,6 +163,7 @@ export class SoloSim {
   }
 
   reset(): void {
+    this.chainStream.reset();
     this.player.ballPool = initialBallPool();
     this.player.pendingOffer = [];
     this.player.chain = [];
@@ -238,6 +243,7 @@ export class SoloSim {
     if (!this.player.pendingOffer.includes(typeId)) return;
     this.player.ballPool.push(typeId);
     this.player.pendingOffer = [];
+    this.chainStream.enqueueNext(typeId);
     this.flushOfferDebt();
   }
 
@@ -246,16 +252,44 @@ export class SoloSim {
     return pickFromPool(this.cannonPool, () => Math.random());
   }
 
-  /** Chain spawn: weighted pick from the player's spawn pool. */
+  /** Current path push speed (intro curve, or debug override). */
+  get pathSpeed(): number {
+    if (this.speedOverride != null) return this.speedOverride;
+    return pathSpeedAt(this.simTime);
+  }
+
+  /** Solo debug: chain run-length weights (copied). */
+  getRunLengths(): number[] {
+    return this.chainStream.getRunLengths();
+  }
+
+  /** Solo debug: replace run-length table (applies to future spawns). */
+  setRunLengths(lengths: readonly number[]): void {
+    this.chainStream.setRunLengths(lengths);
+  }
+
+  /**
+   * Solo debug: lock path speed (px/s). Pass `null` to restore intro→cruise curve.
+   */
+  setPathSpeed(speed: number | null): void {
+    if (speed == null) {
+      this.speedOverride = null;
+      return;
+    }
+    if (!Number.isFinite(speed)) return;
+    this.speedOverride = Math.min(200, Math.max(1, speed));
+  }
+
+  /** Chain spawn: run-length batches from the player's spawn pool. */
   private nextChainType(): string {
     const pool =
       this.player.ballPool.length > 0
         ? this.player.ballPool
         : initialBallPool();
-    return pickFromPool(pool, () => Math.random());
+    return this.chainStream.next(pool, () => Math.random());
   }
 
-  /** Claim an orb by id (same rules as ranked collectExp). */
+  /** Claim an orb by id (despawn VFX only — exp granted on clear). */
   collectExp(orbId: string): boolean {
     if (this.phase !== "playing") return false;
     const id = sanitizeShotId(orbId);
@@ -298,10 +332,17 @@ export class SoloSim {
     });
     if (surviving.length !== balls.length) {
       const expired = balls.filter((b) => isStone(b.typeId) && b.fuse <= 0);
+      const vfx: { x: number; y: number; typeId: string }[] = [];
       for (const b of expired) {
         pointAtPathInto(this.path, b.dist, this.clearPos);
-        this.spawnExpOrbCredit(this.clearPos.x, this.clearPos.y, b.typeId);
+        vfx.push({
+          x: this.clearPos.x,
+          y: this.clearPos.y,
+          typeId: b.typeId,
+        });
       }
+      this.grantExp(expired.length);
+      this.spawnExpOrbVfxBatch(vfx);
       this.player.chain = surviving;
       this.mergeContacts(this.sortChainInPlace());
     }
@@ -323,17 +364,20 @@ export class SoloSim {
     let balls = this.sortChainInPlace();
 
     if (balls.length > 0) {
-      const stepped = this.stepTrainPhysics(balls, path, PATH_SPEED);
-      balls = stepped.balls;
-      if (stepped.joinAt.length > 0) {
-        this.resolveJoinMatches(stepped.joinAt);
-        balls = this.sortChainInPlace();
-      }
+      // Mutates BallState.dist in place — no ArraySchema rewrite.
+      // Floating segments may pack on contact, but never auto-clear:
+      // combos only clear from player shots (insertAndMatch).
+      this.stepTrainPhysics(balls, path, this.pathSpeed);
+      balls = this.sortChainInPlace();
     }
 
-    this.spawnAcc += PATH_SPEED * DT;
-    while (this.spawnAcc >= DIAMETER && balls.length < MAX_CHAIN) {
+    // Cap debt to one ball so clears cannot burst-fill the chain in one tick.
+    this.spawnAcc = Math.min(this.spawnAcc + this.pathSpeed * DT, DIAMETER);
+    const cap = chainCapacityForPath(path.total);
+    while (this.spawnAcc >= DIAMETER && balls.length < cap) {
       const back = balls[0];
+      // Natural limit: spawn while the mouth is free; stops only when the
+      // train backs up to the entrance (or match ends at the hole).
       if (back && back.dist < DIAMETER) break;
       this.spawnAcc -= DIAMETER;
       const typeId = this.nextChainType();
@@ -457,57 +501,6 @@ export class SoloSim {
     return balls;
   }
 
-  /**
-   * After floating segments collide, clear a color group only if the match
-   * spans a join seam. Spawned same-color runs that were already contiguous
-   * must stay until the player inserts a completing ball.
-   */
-  private resolveJoinMatches(joinAt: number[]): void {
-    if (joinAt.length === 0) return;
-    let seams = [...joinAt];
-    let guard = 0;
-    let clearedTotal = 0;
-    while (guard++ < 8 && seams.length > 0) {
-      const balls = this.sortChainInPlace();
-      if (balls.length < 3) break;
-
-      let clearedLeft = -1;
-      let clearedRight = -1;
-      for (const seam of seams) {
-        if (seam <= 0 || seam >= balls.length) continue;
-        if (balls[seam].dist - balls[seam - 1].dist > CONTACT) continue;
-        if (!typesMatch(balls[seam - 1].typeId, balls[seam].typeId)) continue;
-
-        const [left, right] = expandMatchGroup(
-          balls.map((b) => b.typeId),
-          balls.map((b) => b.dist),
-          seam,
-          CONTACT,
-        );
-        if (left >= seam || right < seam) continue;
-        if (right - left + 1 < 3) continue;
-
-        clearedLeft = left;
-        clearedRight = right;
-        break;
-      }
-
-      if (clearedLeft < 0) break;
-
-      const typeIds = balls.map((b) => b.typeId);
-      clearedTotal += this.commitClear(
-        balls,
-        typeIds,
-        clearedLeft,
-        clearedRight,
-      );
-      break;
-    }
-    if (clearedTotal > 0) {
-      this.player.combo += 1;
-    }
-  }
-
   private advanceProjectiles(): void {
     const survivors: SoloProjectile[] = [];
     const balls = this.sortChainInPlace();
@@ -628,12 +621,20 @@ export class SoloSim {
   ): number {
     const effects = resolveClearEffects(typeIds, left, right);
     const removeSet = new Set(effects.remove);
+    const vfx: { x: number; y: number; typeId: string }[] = [];
     for (const i of effects.remove) {
       const b = balls[i];
       if (!b) continue;
       pointAtPathInto(this.path, b.dist, this.clearPos);
-      this.spawnExpOrbCredit(this.clearPos.x, this.clearPos.y, b.typeId);
+      vfx.push({
+        x: this.clearPos.x,
+        y: this.clearPos.y,
+        typeId: b.typeId,
+      });
     }
+    const removed = effects.remove.length;
+    this.grantExp(removed);
+    this.spawnExpOrbVfxBatch(vfx);
     this.player.chain = balls.filter((_, i) => !removeSet.has(i));
     this.mergeContacts(this.sortChainInPlace());
 
@@ -643,7 +644,25 @@ export class SoloSim {
     if (effects.volun) {
       this.spawnVolunStones();
     }
-    return effects.remove.length;
+    return removed;
+  }
+
+  /** Local VFX orbs only (exp already granted). Capped for large clears. */
+  private spawnExpOrbVfxBatch(
+    items: { x: number; y: number; typeId: string }[],
+  ): void {
+    if (items.length === 0) return;
+    const n = Math.min(items.length, EXP_ORB_VFX_CAP);
+    for (let i = 0; i < n; i++) {
+      const idx =
+        items.length <= n
+          ? i
+          : n === 1
+            ? 0
+            : Math.floor((i * (items.length - 1)) / (n - 1));
+      const it = items[idx]!;
+      this.spawnExpOrbCredit(it.x, it.y, it.typeId);
+    }
   }
 
   private spawnExpOrbCredit(x: number, y: number, typeId: string): void {
@@ -660,7 +679,8 @@ export class SoloSim {
     const flight = expParticleReadyDelaySec(dist) - EXP_PARTICLE_WAIT_SEC;
     this.expOrbMeta.set(id, {
       readyAt: this.simTime + readyDelay,
-      expiresAt: this.simTime + readyDelay + Math.max(0, flight) + EXP_ORB_EXPIRE_SEC,
+      expiresAt:
+        this.simTime + readyDelay + Math.max(0, flight) + EXP_ORB_EXPIRE_SEC,
     });
   }
 
@@ -673,19 +693,20 @@ export class SoloSim {
     for (const id of expired) this.consumeExpOrb(id);
   }
 
+  /** Despawn a VFX credit. Exp was already granted on clear. */
   private consumeExpOrb(orbId: string): boolean {
     if (!this.expOrbMeta.has(orbId)) return false;
     this.expOrbMeta.delete(orbId);
     this.expOrbs = this.expOrbs.filter((o) => o.id !== orbId);
-    this.grantExp(1);
     return true;
   }
 
   /** Solo: no opponent — stones land on the player's own chain. */
   private spawnVolunStones(): void {
     let balls = this.sortChainInPlace();
+    const cap = chainCapacityForPath(this.path.total);
     for (let i = 0; i < VOLUN_STONE_COUNT; i++) {
-      if (balls.length >= MAX_CHAIN) break;
+      if (balls.length >= cap) break;
       for (const b of balls) b.dist += DIAMETER;
       balls.unshift({
         id: nid(),

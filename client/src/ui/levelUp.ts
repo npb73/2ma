@@ -250,96 +250,116 @@ export function mountLevelUpUi(
   };
 }
 
-/** DOM EXP bar positioned under a cannon in stage-local coords. */
+/** Full-width top EXP bar (5px). Rainbow overflow while level-up offer is open. */
 export function mountExpBar(stage: HTMLElement): {
   root: HTMLElement;
-    update: (opts: {
-      level: number;
-      exp: number;
-      need: number;
-      /** Stage-local pixel position of cannon center. */
-      cannonX: number;
-      cannonY: number;
-      stageW: number;
-      stageH: number;
-    }) => void;
-  } {
+  update: (opts: {
+    level: number;
+    exp: number;
+    need: number;
+    /** True while the level-up ball picker is open — bar floods with rainbow. */
+    levelUpOpen?: boolean;
+  }) => void;
+} {
+  const STYLE_ID = "exp-bar-rgb-style-v2";
+  document.getElementById("exp-bar-rainbow-style")?.remove();
+  document.getElementById(STYLE_ID)?.remove();
+  {
+    const style = document.createElement("style");
+    style.id = STYLE_ID;
+    style.textContent = `
+      @keyframes exp-bar-rgb-scroll {
+        from { transform: translate3d(0, 0, 0); }
+        to { transform: translate3d(-33.333%, 0, 0); }
+      }
+      .exp-bar-rgb-strip {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+        opacity: 0;
+        pointer-events: none;
+      }
+      .exp-bar-rgb-strip.is-on {
+        opacity: 1;
+      }
+      .exp-bar-rgb-band {
+        height: 100%;
+        width: 300%;
+        background: linear-gradient(
+          90deg,
+          #ff0040,
+          #ff8000,
+          #ffd800,
+          #00e676,
+          #00d4ff,
+          #2979ff,
+          #d500f9,
+          #ff0040,
+          #ff8000,
+          #ffd800,
+          #00e676,
+          #00d4ff,
+          #2979ff,
+          #d500f9,
+          #ff0040
+        );
+        will-change: transform;
+        animation: exp-bar-rgb-scroll 0.35s linear infinite;
+      }
+    `;
+    document.head.append(style);
+  }
+
   const root = el("div", {
     position: "absolute",
-    zIndex: "15",
+    left: "0",
+    top: "0",
+    width: "100%",
+    height: "5px",
+    zIndex: "35",
     pointerEvents: "none",
-    transform: "translate(-50%, 0)",
-    width: "96px",
-  });
-
-  const label = el("div", {
-    fontSize: "11px",
-    color: UI.text,
-    textAlign: "center",
-    marginBottom: "3px",
-    textShadow: "0 1px 2px rgba(0,0,0,.8)",
-  });
-
-  const track = el("div", {
-    height: "7px",
-    borderRadius: "4px",
-    background: "rgba(4,21,40,.85)",
-    border: `1px solid ${UI.secondaryDark}`,
+    background: "rgba(4,21,40,.9)",
     overflow: "hidden",
   });
+
   const fill = el("div", {
     height: "100%",
     width: "0%",
     background: UI.accent,
-    borderRadius: "3px",
     transition: "width 120ms linear",
   });
-  track.append(fill);
-  root.append(label, track);
+
+  const rgbStrip = document.createElement("div");
+  rgbStrip.className = "exp-bar-rgb-strip";
+  const rgbBand = document.createElement("div");
+  rgbBand.className = "exp-bar-rgb-band";
+  rgbStrip.append(rgbBand);
+
+  root.append(fill, rgbStrip);
   stage.append(root);
 
-  let lastKey = {
-    level: NaN,
-    exp: NaN,
-    need: NaN,
-    left: "",
-    top: "",
-  };
+  let lastKey = "";
 
   return {
     root,
     update(opts) {
       const need = Math.max(1, opts.need);
       const within = Math.max(0, Math.min(opts.exp, need));
-      const pct = (within / need) * 100;
-      const sx = (opts.cannonX / 1280) * opts.stageW;
-      const sy = (opts.cannonY / 720) * opts.stageH;
-      const left = `${sx}px`;
-      const top = `${sy + 28}px`;
-      const labelText = `ур. ${opts.level} · ${within}/${need}`;
-      const widthPct = `${pct}%`;
+      const open = Boolean(opts.levelUpOpen);
+      const pct = open ? 100 : (within / need) * 100;
+      const key = `${opts.level}|${within}|${need}|${open ? 1 : 0}`;
+      if (key === lastKey) return;
+      lastKey = key;
 
-      if (
-        lastKey.level === opts.level &&
-        lastKey.exp === opts.exp &&
-        lastKey.need === need &&
-        lastKey.left === left &&
-        lastKey.top === top
-      ) {
-        return;
+      if (open) {
+        fill.style.width = "0%";
+        fill.style.opacity = "0";
+        rgbStrip.classList.add("is-on");
+      } else {
+        rgbStrip.classList.remove("is-on");
+        fill.style.opacity = "1";
+        fill.style.width = `${pct}%`;
       }
-      lastKey = {
-        level: opts.level,
-        exp: opts.exp,
-        need,
-        left,
-        top,
-      };
-
-      label.textContent = labelText;
-      fill.style.width = widthPct;
-      root.style.left = left;
-      root.style.top = top;
     },
   };
 }

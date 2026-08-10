@@ -65,7 +65,7 @@ export class RankedState extends Schema {
   @type("string") mapId: string = "";
   @type({ map: PlayerState }) players = new MapSchema<PlayerState>();
   @type([ProjectileState]) projectiles = new ArraySchema<ProjectileState>();
-  /** Pending exp orbs — client VFX + collectExp id check. */
+  /** Pending exp-orb VFX credits (exp is granted on clear; collect only despawns). */
   @type([ExpOrbCredit]) expOrbs = new ArraySchema<ExpOrbCredit>();
   /**
    * Ring buffer of recently resolved (hit / off-screen) projectile ids.

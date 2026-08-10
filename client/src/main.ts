@@ -76,6 +76,9 @@ async function showLobby(): Promise<void> {
         mode,
         code,
         mapId,
+        onExit: () => {
+          void showLobby();
+        },
       });
     },
   });
