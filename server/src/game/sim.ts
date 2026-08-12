@@ -15,7 +15,6 @@ import {
   ROLLBACK_SPEED,
   TICK_HZ,
   cannonSolidPool,
-  chainCapacityForPath,
   ChainTypeStream,
   expParticleColor,
   expParticleReadyDelaySec,
@@ -321,12 +320,10 @@ export class GameSim {
         this.spawnAcc[p.seat] + speed * DT,
         DIAMETER,
       );
-      const cap = chainCapacityForPath(path.total);
-      while (this.spawnAcc[p.seat] >= DIAMETER && balls.length < cap) {
+      while (this.spawnAcc[p.seat] >= DIAMETER) {
         const back = balls[0];
         // Fixed entrance: only spawn when the rear has cleared the mouth.
-        // This is the natural Zuma limit — spawn resumes as the train moves
-        // and continues until a ball reaches the hole (match end).
+        // Spawn resumes as the train moves; no hard chain-length cap.
         if (back && back.dist < DIAMETER) break;
         this.spawnAcc[p.seat] -= DIAMETER;
         const newBall = this.makeBall(this.nextChainType(p), 0);

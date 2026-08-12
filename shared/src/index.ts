@@ -123,21 +123,8 @@ export const BASE_LEVEL_EXP = 10;
 /** Each next level needs +10% more cleared balls than the previous. */
 export const LEVEL_EXP_GROWTH = 1.1;
 export const INITIAL_CHAIN = 18;
-/**
- * Absolute safety ceiling for balls on one chain (sync / memory).
- * Gameplay spawn is also gated by mouth clearance and path length — this
- * must stay above the longest ranked path (~73 packed balls) or spawn
- * stops mid-match while the hole is still far away.
- */
-export const MAX_CHAIN = 96;
 /** Spacing slack before two balls count as separate segments. */
 export const GAP_EPS = 2;
-
-/** Max balls that can pack on a path before the mouth is blocked. */
-export function chainCapacityForPath(pathTotal: number): number {
-  const packed = Math.floor(Math.max(0, pathTotal) / (BALL_RADIUS * 2));
-  return Math.min(MAX_CHAIN, packed + 2);
-}
 
 export {
   EXP_PARTICLE_WAIT_SEC,

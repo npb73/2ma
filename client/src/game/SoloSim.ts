@@ -16,7 +16,6 @@ import {
   TICK_HZ,
   buildPath,
   cannonSolidPool,
-  chainCapacityForPath,
   ChainTypeStream,
   expandMatchGroup,
   expParticleColor,
@@ -356,11 +355,9 @@ export class SoloSim {
 
     // Cap debt to one ball so clears cannot burst-fill the chain in one tick.
     this.spawnAcc = Math.min(this.spawnAcc + this.pathSpeed * DT, DIAMETER);
-    const cap = chainCapacityForPath(path.total);
-    while (this.spawnAcc >= DIAMETER && balls.length < cap) {
+    while (this.spawnAcc >= DIAMETER) {
       const back = balls[0];
-      // Natural limit: spawn while the mouth is free; stops only when the
-      // train backs up to the entrance (or match ends at the hole).
+      // Spawn while the mouth is free; no hard chain-length cap.
       if (back && back.dist < DIAMETER) break;
       this.spawnAcc -= DIAMETER;
       const typeId = this.nextChainType();
