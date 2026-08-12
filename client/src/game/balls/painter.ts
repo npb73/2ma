@@ -33,14 +33,13 @@ export class BallPainter {
     x: number,
     y: number,
     radius = BALL_RADIUS,
-    fuse = -1,
   ): void {
     this.seen.add(id);
-    this.hits.push({ id, typeId, x, y, radius, fuse });
+    this.hits.push({ id, typeId, x, y, radius });
     const color = solidColorOf(typeId);
     if (color === null || !this.solids.enabled) {
       this.solids.hide(id);
-      drawBallType(this.gfx, typeId, x, y, radius, fuse);
+      drawBallType(this.gfx, typeId, x, y, radius);
       return;
     }
 

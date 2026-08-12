@@ -4,6 +4,8 @@ import Phaser from "phaser";
 export const BARREL_LEN = 40;
 export const MUZZLE_BALL_R = 11;
 export const NEXT_BALL_R = 10;
+/** Outer radius of the cannon reload ring. */
+export const RELOAD_RING_R = 30;
 
 const RECOIL_DIST = 8;
 const RECOIL_MS = 130;
@@ -40,6 +42,23 @@ export class CannonRecoil {
       x: -Math.cos(aim) * amount,
       y: -Math.sin(aim) * amount,
     };
+  }
+}
+
+/** Client-predicted fire cooldown for ranked local shots (ms clock). */
+export class LocalReload {
+  private until = 0;
+
+  kick(durationSec: number, now = performance.now()): void {
+    this.until = now + durationSec * 1000;
+  }
+
+  remainingSec(now = performance.now()): number {
+    return Math.max(0, (this.until - now) / 1000);
+  }
+
+  ready(now = performance.now()): boolean {
+    return now >= this.until;
   }
 }
 
@@ -81,4 +100,28 @@ export function drawCannonBody(
   g.lineStyle(5, hex(barrelColor), 1);
   g.lineBetween(pose.baseX, pose.baseY, pose.tipX, pose.tipY);
   return pose;
+}
+
+/**
+ * Circular reload gauge around the cannon.
+ * `readyProgress` 0 = just fired, 1 = ready (ring hidden when ≥ 1).
+ */
+export function drawReloadRing(
+  g: Phaser.GameObjects.Graphics,
+  cx: number,
+  cy: number,
+  readyProgress: number,
+): void {
+  if (readyProgress >= 1) return;
+  const p = Math.max(0, Math.min(1, readyProgress));
+  const start = -Math.PI / 2;
+
+  g.lineStyle(3, hex(UI.secondaryDark), 0.55);
+  g.strokeCircle(cx, cy, RELOAD_RING_R);
+
+  const sweep = Math.max(0.02, p) * Math.PI * 2;
+  g.lineStyle(3, hex(UI.accentHot), 1);
+  g.beginPath();
+  g.arc(cx, cy, RELOAD_RING_R, start, start + sweep, false);
+  g.strokePath();
 }

@@ -149,7 +149,7 @@ export class ChainTypeStream {
 
 /**
  * Roll 3 offer cards for level-up (added to the chain spawn pool).
- * Stones are never offered. Unique specials only if not already owned.
+ * Unique specials only if not already owned.
  */
 export function rollLevelOffer(
   pool: readonly string[],
@@ -159,7 +159,6 @@ export function rollLevelOffer(
   const ownedUnique = new Set(pool.filter((id) => getBallType(id)?.unique));
 
   const candidates = BALL_TYPES.filter((t) => {
-    if (t.kind === "stone") return false;
     if (!t.unique) return true;
     return !ownedUnique.has(t.id);
   });

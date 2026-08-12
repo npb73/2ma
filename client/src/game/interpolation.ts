@@ -3,14 +3,12 @@
 export interface BallSample {
   id: string;
   typeId: string;
-  fuse: number;
   dist: number;
   seat: number;
 }
 
 interface BallTrack {
   typeId: string;
-  fuse: number;
   seat: number;
   from: number;
   to: number;
@@ -32,7 +30,6 @@ export class DistInterpolator {
       if (!prev) {
         this.tracks.set(sample.id, {
           typeId: sample.typeId,
-          fuse: sample.fuse,
           seat: sample.seat,
           from: sample.dist,
           to: sample.dist,
@@ -43,7 +40,6 @@ export class DistInterpolator {
       }
 
       prev.typeId = sample.typeId;
-      prev.fuse = sample.fuse;
       prev.seat = sample.seat;
 
       const delta = Math.abs(sample.dist - prev.render);
@@ -78,16 +74,10 @@ export class DistInterpolator {
   }
 
   forEach(
-    fn: (
-      id: string,
-      seat: number,
-      typeId: string,
-      dist: number,
-      fuse: number,
-    ) => void,
+    fn: (id: string, seat: number, typeId: string, dist: number) => void,
   ): void {
     for (const [id, track] of this.tracks) {
-      fn(id, track.seat, track.typeId, track.render, track.fuse);
+      fn(id, track.seat, track.typeId, track.render);
     }
   }
 }

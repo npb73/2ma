@@ -1,5 +1,6 @@
 import {
   BALL_RADIUS,
+  FIRE_RELOAD_SEC,
   TICK_HZ,
   UI,
   ballDisplayColors,
@@ -30,6 +31,7 @@ import {
   NEXT_BALL_R,
   cannonPose,
   drawCannonBody,
+  drawReloadRing,
 } from "./cannonView";
 import { addMapBackground, drawMapHole, drawMapPath } from "./mapView";
 
@@ -112,7 +114,6 @@ export async function startSoloGame(
   const drawBalls: {
     id: string;
     typeId: string;
-    fuse: number;
     x: number;
     y: number;
   }[] = [];
@@ -211,6 +212,7 @@ export async function startSoloGame(
         this.input.on("pointerdown", () => {
           if (leaving || graphicsUi.isOpen() || sim.phase !== "playing") return;
           if (sim.player.pendingOffer.length > 0) return;
+          if (sim.player.reloadSec > 0) return;
           const aim = localAim ?? sim.player.aim;
           sim.setAim(aim);
           const shotId = projectiles.spawnLocal({
@@ -248,7 +250,6 @@ export async function startSoloGame(
               sample = {
                 id: b.id,
                 typeId: b.typeId,
-                fuse: b.fuse,
                 dist: b.dist,
                 seat: 0,
               };
@@ -256,7 +257,6 @@ export async function startSoloGame(
             } else {
               sample.id = b.id;
               sample.typeId = b.typeId;
-              sample.fuse = b.fuse;
               sample.dist = b.dist;
               sample.seat = 0;
             }
@@ -269,7 +269,7 @@ export async function startSoloGame(
           ballPositions.length = 0;
           hitPointUsed = 0;
           let drawCount = 0;
-          distInterp.forEach((id, _seat, typeId, dist, fuse) => {
+          distInterp.forEach((id, _seat, typeId, dist) => {
             let pt = hitPointPool[hitPointUsed];
             if (!pt) {
               pt = { x: 0, y: 0 };
@@ -281,12 +281,11 @@ export async function startSoloGame(
 
             let db = drawBalls[drawCount];
             if (!db) {
-              db = { id, typeId, fuse, x: pt.x, y: pt.y };
+              db = { id, typeId, x: pt.x, y: pt.y };
               drawBalls[drawCount] = db;
             } else {
               db.id = id;
               db.typeId = typeId;
-              db.fuse = fuse;
               db.x = pt.x;
               db.y = pt.y;
             }
@@ -394,7 +393,7 @@ export async function startSoloGame(
 
           for (let i = 0; i < drawBalls.length; i++) {
             const b = drawBalls[i];
-            balls.draw(b.id, b.typeId, b.x, b.y, BALL_RADIUS, b.fuse);
+            balls.draw(b.id, b.typeId, b.x, b.y, BALL_RADIUS);
           }
           expOrbs.syncCredits(sim.expOrbs, (sid) =>
             sid === sim.sessionId ? cannon : null,
@@ -405,8 +404,11 @@ export async function startSoloGame(
           const aim = localAim ?? me.aim;
           const recoil = cannonRecoil.offset(sim.sessionId, aim, now);
           const anyRecoil = recoil.x !== 0 || recoil.y !== 0;
-          const cannonGfxKey = `${aim.toFixed(3)}:${me.currentType}:${me.nextType}`;
-          const redrawCannons = cannonGfxKey !== lastCannonGfxKey || anyRecoil;
+          const reloadSec = me.reloadSec;
+          const anyReload = reloadSec > 0;
+          const cannonGfxKey = `${aim.toFixed(3)}:${me.currentType}:${me.nextType}:${reloadSec.toFixed(2)}`;
+          const redrawCannons =
+            cannonGfxKey !== lastCannonGfxKey || anyRecoil || anyReload;
           if (redrawCannons) {
             lastCannonGfxKey = cannonGfxKey;
             cannonGfx.clear();
@@ -416,6 +418,13 @@ export async function startSoloGame(
           const pose = redrawCannons
             ? drawCannonBody(cannonGfx, cannon.x, cannon.y, aim, recoil, barrel)
             : cannonPose(cannon.x, cannon.y, aim, recoil);
+          if (redrawCannons) {
+            const ready =
+              FIRE_RELOAD_SEC <= 0
+                ? 1
+                : 1 - Math.min(1, reloadSec / FIRE_RELOAD_SEC);
+            drawReloadRing(cannonGfx, pose.baseX, pose.baseY, ready);
+          }
           cannonBalls.draw(
             "muzzle",
             me.currentType,

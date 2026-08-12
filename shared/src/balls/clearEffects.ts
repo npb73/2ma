@@ -7,7 +7,6 @@ export interface ClearResolution {
   /** Sorted unique indices to remove. */
   remove: number[];
   freeze: boolean;
-  volun: boolean;
   /** Plasma colors that triggered a full-field wipe. */
   plasmaColors: SolidColor[];
 }
@@ -25,7 +24,6 @@ export function resolveClearEffects(
   for (let i = left; i <= right; i++) remove.add(i);
 
   let freeze = false;
-  let volun = false;
   const plasmaColors: SolidColor[] = [];
 
   let explosiveIdx = -1;
@@ -33,7 +31,6 @@ export function resolveClearEffects(
     const kind = getBallType(typeIds[i]!)?.kind;
     if (kind === "explosive") explosiveIdx = i;
     if (kind === "ice") freeze = true;
-    if (kind === "volun") volun = true;
     if (kind === "plasma") {
       const colors = getBallType(typeIds[i]!)?.colors ?? [];
       for (const c of colors) plasmaColors.push(c);
@@ -65,7 +62,6 @@ export function resolveClearEffects(
   return {
     remove: [...remove].sort((a, b) => a - b),
     freeze,
-    volun,
     plasmaColors,
   };
 }

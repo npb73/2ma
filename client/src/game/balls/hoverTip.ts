@@ -1,8 +1,6 @@
 import {
-  STONE_LIFETIME_SEC,
   UI,
   getBallType,
-  isStone,
 } from "@2ma/shared";
 import type Phaser from "phaser";
 import { ballSwatch } from "./swatch";
@@ -16,7 +14,6 @@ export interface BallHit {
   x: number;
   y: number;
   radius: number;
-  fuse: number;
 }
 
 /**
@@ -101,7 +98,7 @@ export class BallHoverTip {
     canvas: HTMLCanvasElement,
   ): void {
     const def = getBallType(hit.typeId);
-    const contentKey = `${hit.typeId}|${hit.fuse.toFixed(1)}`;
+    const contentKey = hit.typeId;
     if (this.visibleId !== hit.id || this.lastContentKey !== contentKey) {
       this.lastContentKey = contentKey;
       this.visibleId = hit.id;
@@ -119,13 +116,6 @@ export class BallHoverTip {
         desc.style.cssText = `font-size:11px;color:${UI.textMuted};text-align:center;line-height:1.35`;
         desc.textContent = def.description;
         this.panel.append(desc);
-      }
-
-      if (isStone(hit.typeId) && hit.fuse >= 0) {
-        const life = document.createElement("div");
-        life.style.cssText = `font-size:11px;color:${UI.accentHot};text-align:center;font-weight:600`;
-        life.textContent = `Осталось ${Math.max(0, hit.fuse).toFixed(1)}с / ${STONE_LIFETIME_SEC}с`;
-        this.panel.append(life);
       }
     }
 

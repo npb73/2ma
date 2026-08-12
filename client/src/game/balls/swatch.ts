@@ -9,8 +9,6 @@ import { fillExplosiveSwatch } from "./explosive";
 import { fillIceSwatch } from "./ice";
 import { fillPlasmaSwatch } from "./plasma";
 import { fillSolidSwatch } from "./solid";
-import { fillStoneSwatch } from "./stone";
-import { fillVolunSwatch } from "./volun";
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -43,10 +41,6 @@ export function ballSwatch(typeId: string, size = 36): HTMLElement {
     fillExplosiveSwatch(wrap);
   } else if (kind === "ice") {
     fillIceSwatch(wrap);
-  } else if (kind === "volun") {
-    fillVolunSwatch(wrap, colors);
-  } else if (kind === "stone") {
-    fillStoneSwatch(wrap);
   } else {
     fillSolidSwatch(wrap, colors[0] ?? BALL_COLORS[0]!);
   }

@@ -11,8 +11,6 @@ export {
 export {
   EXPLOSIVE_BLAST_RADIUS,
   ICE_FREEZE_SEC,
-  VOLUN_STONE_COUNT,
-  STONE_LIFETIME_SEC,
 } from "./constants.js";
 
 export { BALL_TYPES, getBallType, isBallTypeId } from "./catalog.js";
@@ -30,8 +28,6 @@ export { ballDisplayColors } from "./display.js";
 export { solidTypeId, solidId } from "./solid/index.js";
 export { isExplosive, blastInclusiveRange } from "./explosive/index.js";
 export { isIce } from "./ice/index.js";
-export { isVolun } from "./volun/index.js";
-export { isStone, STONE_TYPE_ID, spawnStoneFuse } from "./stone/index.js";
 export {
   resolveClearEffects,
   groupContainsKind,

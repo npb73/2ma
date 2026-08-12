@@ -1,6 +1,7 @@
 import {
   BALL_RADIUS,
   DEFAULT_RANKED_MAP_ID,
+  FIRE_RELOAD_SEC,
   UI,
   ballDisplayColors,
   buildPath,
@@ -20,10 +21,12 @@ import { mountGraphicsSettings } from "../ui/graphicsSettings";
 import { AdaptiveQuality, setActiveWorldSize, syncGameToStage } from "./adaptiveQuality";
 import {
   CannonRecoil,
+  LocalReload,
   MUZZLE_BALL_R,
   NEXT_BALL_R,
   cannonPose,
   drawCannonBody,
+  drawReloadRing,
 } from "./cannonView";
 import { DistInterpolator, type BallSample } from "./interpolation";
 import { ProjectilePresenter } from "./projectiles";
@@ -55,7 +58,6 @@ interface StartOptions {
 interface BallView {
   id: string;
   typeId: string;
-  fuse: number;
   dist: number;
 }
 
@@ -70,6 +72,7 @@ interface PlayerView {
   combo: number;
   level: number;
   exp: number;
+  reloadSec: number;
   ballPool: string[];
   pendingOffer: string[];
   chain: BallView[];
@@ -144,13 +147,11 @@ function readState(room: Room): GameView {
     const chainRaw = asArray<{
       id: string;
       typeId: string;
-      fuse: number;
       dist: number;
     }>(p.chain);
     const chain: BallView[] = chainRaw.map((b) => ({
       id: b.id,
       typeId: String(b.typeId ?? "solid_0"),
-      fuse: Number(b.fuse ?? -1),
       dist: b.dist,
     }));
     players.set(sessionId, {
@@ -164,6 +165,7 @@ function readState(room: Room): GameView {
       combo: Number(p.combo ?? 0),
       level: Number(p.level ?? 0),
       exp: Number(p.exp ?? 0),
+      reloadSec: Number(p.reloadSec ?? 0),
       ballPool: asArray<string>(p.ballPool).map(String),
       pendingOffer: asArray<string>(p.pendingOffer).map(String),
       chain,
@@ -458,6 +460,7 @@ export async function startGame(
   projectiles.setWorldSize(map.width, map.height);
   const expOrbs = new ExpOrbPresenter();
   const cannonRecoil = new CannonRecoil();
+  const localReload = new LocalReload();
   const recoiledShots = new Set<string>();
   let lastFrameMs = performance.now();
   const pathA = buildPath(mapPath(map, 0));
@@ -480,7 +483,6 @@ export async function startGame(
   const drawBalls: {
     id: string;
     typeId: string;
-    fuse: number;
     x: number;
     y: number;
   }[] = [];
@@ -601,6 +603,7 @@ export async function startGame(
             return;
           const me = cachedView.players.get(room.sessionId);
           if (!me || me.pendingOffer.length > 0) return;
+          if (!localReload.ready() || me.reloadSec > 0) return;
           const aim = localAim ?? me.aim;
           room.send("aim", { angle: aim });
           lastAimSent = performance.now();
@@ -612,6 +615,7 @@ export async function startGame(
             cannon,
           });
           room.send("fire", { shotId });
+          localReload.kick(FIRE_RELOAD_SEC);
           cannonRecoil.kick(room.sessionId);
           recoiledShots.add(shotId);
         });
@@ -634,7 +638,6 @@ export async function startGame(
                 sample = {
                   id: b.id,
                   typeId: b.typeId,
-                  fuse: b.fuse,
                   dist: b.dist,
                   seat: p.seat,
                 };
@@ -642,7 +645,6 @@ export async function startGame(
               } else {
                 sample.id = b.id;
                 sample.typeId = b.typeId;
-                sample.fuse = b.fuse;
                 sample.dist = b.dist;
                 sample.seat = p.seat;
               }
@@ -666,7 +668,7 @@ export async function startGame(
           }
           hitPointUsed = 0;
           let drawCount = 0;
-          distInterp.forEach((id, seat, typeId, dist, fuse) => {
+          distInterp.forEach((id, seat, typeId, dist) => {
             const path = seat === 0 ? pathA : pathB;
             const sessionId = seatSession[seat === 0 ? 0 : 1];
             const arr = sessionId ? ballsByOwner.get(sessionId) : undefined;
@@ -681,12 +683,11 @@ export async function startGame(
 
             let db = drawBalls[drawCount];
             if (!db) {
-              db = { id, typeId, fuse, x: pt.x, y: pt.y };
+              db = { id, typeId, x: pt.x, y: pt.y };
               drawBalls[drawCount] = db;
             } else {
               db.id = id;
               db.typeId = typeId;
-              db.fuse = fuse;
               db.x = pt.x;
               db.y = pt.y;
             }
@@ -765,7 +766,7 @@ export async function startGame(
 
           for (let i = 0; i < drawBalls.length; i++) {
             const b = drawBalls[i];
-            balls.draw(b.id, b.typeId, b.x, b.y, BALL_RADIUS, b.fuse);
+            balls.draw(b.id, b.typeId, b.x, b.y, BALL_RADIUS);
           }
 
           expOrbs.syncCredits(view.expOrbs, (sid) => {
@@ -784,15 +785,20 @@ export async function startGame(
 
           let cannonGfxKey = "";
           let anyRecoil = false;
+          let anyReload = false;
           for (const p of view.players.values()) {
             const isMe = p.sessionId === room.sessionId;
             const aim = isMe && localAim !== null ? localAim : p.aim;
             const recoil = cannonRecoil.offset(p.sessionId, aim, now);
             if (recoil.x !== 0 || recoil.y !== 0) anyRecoil = true;
-            cannonGfxKey += `${p.sessionId}:${aim.toFixed(3)}:${p.currentType}:${p.nextType}|`;
+            const reloadSec = isMe
+              ? Math.max(p.reloadSec, localReload.remainingSec(now))
+              : p.reloadSec;
+            if (reloadSec > 0) anyReload = true;
+            cannonGfxKey += `${p.sessionId}:${aim.toFixed(3)}:${p.currentType}:${p.nextType}:${reloadSec.toFixed(2)}|`;
           }
           const redrawCannons =
-            cannonGfxKey !== lastCannonGfxKey || anyRecoil;
+            cannonGfxKey !== lastCannonGfxKey || anyRecoil || anyReload;
           if (redrawCannons) {
             lastCannonGfxKey = cannonGfxKey;
             cannonGfx.clear();
@@ -814,6 +820,16 @@ export async function startGame(
                   barrel,
                 )
               : cannonPose(cannon.x, cannon.y, aim, recoil);
+            if (redrawCannons) {
+              const reloadSec = isMe
+                ? Math.max(p.reloadSec, localReload.remainingSec(now))
+                : p.reloadSec;
+              const ready =
+                FIRE_RELOAD_SEC <= 0
+                  ? 1
+                  : 1 - Math.min(1, reloadSec / FIRE_RELOAD_SEC);
+              drawReloadRing(cannonGfx, pose.baseX, pose.baseY, ready);
+            }
             cannonBalls.draw(
               `muzzle_${p.sessionId}`,
               p.currentType,

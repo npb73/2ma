@@ -5,7 +5,6 @@ import type { SolidColor } from "./types.js";
 export function matchColors(typeId: string): Set<SolidColor> | "all" | "none" {
   const t = getBallType(typeId);
   if (!t) return "none";
-  if (t.kind === "stone") return "none";
   /** Empty color list = wildcard (e.g. explosive). */
   if (t.colors.length === 0) return "all";
   return new Set(t.colors);
@@ -87,7 +86,6 @@ function refineRequired(
 /**
  * Expand a contiguous matching run around `idx`.
  * Only walks through balls that are in contact (gap <= contactMax).
- * Stone never joins a color group.
  *
  * Wildcards and multi-color balls adopt the shared color of the group —
  * they do NOT bridge two different solid colors.

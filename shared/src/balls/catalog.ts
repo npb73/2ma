@@ -2,8 +2,6 @@ import { explosiveDefs } from "./explosive/defs.js";
 import { iceDefs } from "./ice/defs.js";
 import { plasmaDefs } from "./plasma/defs.js";
 import { solidDefs } from "./solid/defs.js";
-import { stoneDefs } from "./stone/defs.js";
-import { volunDefs } from "./volun/defs.js";
 import type { BallTypeDef } from "./types.js";
 
 export const BALL_TYPES: readonly BallTypeDef[] = [
@@ -11,8 +9,6 @@ export const BALL_TYPES: readonly BallTypeDef[] = [
   ...plasmaDefs(),
   ...explosiveDefs(),
   ...iceDefs(),
-  ...volunDefs(),
-  ...stoneDefs(),
 ];
 
 const BY_ID = new Map(BALL_TYPES.map((t) => [t.id, t]));

@@ -1,7 +1,8 @@
 import {
   CHAIN_RUN_LENGTHS,
   PATH_SPEED,
-  PATH_SPEED_INTRO,
+  PATH_SPEED_ACCEL_PER_SEC,
+  PATH_SPEED_MAX,
   UI,
 } from "@2ma/shared";
 import type { SoloSim } from "../game/SoloSim";
@@ -44,14 +45,14 @@ export function mountSoloDebug(host: HTMLElement, sim: SoloSim): SoloDebugHandle
   const speedLabel = document.createElement("label");
   speedLabel.style.cssText = "display:flex;flex-direction:column;gap:4px;";
   const speedCaption = document.createElement("span");
-  speedCaption.innerHTML = `Скорость (px/s). Старт: ${PATH_SPEED_INTRO} → ${PATH_SPEED}. Слайдер фиксирует.`;
+  speedCaption.innerHTML = `Скорость (px/s). ${PATH_SPEED} + ${PATH_SPEED_ACCEL_PER_SEC}/с → ${PATH_SPEED_MAX}. Слайдер фиксирует.`;
   speedCaption.style.color = UI.secondary;
   const speedRow = document.createElement("div");
   speedRow.style.cssText = "display:flex;align-items:center;gap:8px;";
   const speedInput = document.createElement("input");
   speedInput.type = "range";
   speedInput.min = "1";
-  speedInput.max = "120";
+  speedInput.max = String(PATH_SPEED_MAX);
   speedInput.step = "1";
   speedInput.value = String(Math.round(sim.pathSpeed));
   speedInput.style.cssText = "flex:1;";
@@ -161,7 +162,7 @@ export function mountSoloDebug(host: HTMLElement, sim: SoloSim): SoloDebugHandle
     sim.setRunLengths(CHAIN_RUN_LENGTHS);
     runsInput.value = sim.getRunLengths().join(",");
     syncSpeedReadout();
-    status.textContent = "Кривая 100→20 и серии по умолчанию";
+    status.textContent = `Разгон ${PATH_SPEED}→${PATH_SPEED_MAX} и серии по умолчанию`;
     status.style.color = UI.secondary;
   });
 

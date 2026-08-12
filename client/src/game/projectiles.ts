@@ -155,8 +155,10 @@ export class ProjectilePresenter {
       const x1 = x0 + p.vx * dtSec;
       const y1 = y0 + p.vy * dtSec;
 
-      const targets = this.targetsByOwner.get(p.ownerSessionId);
-      if (targets && targets.length > 0) {
+      // Collide with any chain (own or opponent) — matches server crossfire.
+      let hitAny = false;
+      for (const targets of this.targetsByOwner.values()) {
+        if (targets.length === 0) continue;
         const hit = firstProjectileHit(
           x0,
           y0,
@@ -166,9 +168,13 @@ export class ProjectilePresenter {
           PROJECTILE_HIT_RADIUS,
         );
         if (hit) {
-          this.items.delete(id);
-          continue;
+          hitAny = true;
+          break;
         }
+      }
+      if (hitAny) {
+        this.items.delete(id);
+        continue;
       }
 
       p.x = x1;

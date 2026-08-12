@@ -13,12 +13,12 @@ import { ensureBallPipeline } from "./pipeline";
  * Nearest upscale. 32×N must stay power-of-two for clean GL_REPEAT sampling.
  * (2 → 64, 4 → 128)
  */
-const TEX_SCALE = 2;
+const TEX_SCALE = 1;
 
 const BALL_URLS = [redBall, yellowBall, greenBall, blueBall, pinkBall] as const;
 
 /** Baked skin size in pixels (set in prepareBallTextures). */
-let skinSize = 32 * TEX_SCALE;
+let skinSize = 16 * TEX_SCALE;
 
 export function getSolidSkinSize(): number {
   return skinSize;

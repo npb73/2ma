@@ -55,8 +55,6 @@ export {
   COLOR_COUNT,
   EXPLOSIVE_BLAST_RADIUS,
   ICE_FREEZE_SEC,
-  VOLUN_STONE_COUNT,
-  STONE_LIFETIME_SEC,
   BALL_TYPES,
   getBallType,
   isBallTypeId,
@@ -75,10 +73,6 @@ export {
   solidTypeId,
   isExplosive,
   isIce,
-  isVolun,
-  isStone,
-  STONE_TYPE_ID,
-  spawnStoneFuse,
   blastInclusiveRange,
   resolveClearEffects,
   type SolidColor,
@@ -92,24 +86,22 @@ export const STARTING_RATING = 1000;
 
 export const TICK_HZ = 20;
 export const BALL_RADIUS = 14;
-/** Steady path push after the intro boost (px/s). */
+/** Cannon fire cooldown after each shot (seconds). */
+export const FIRE_RELOAD_SEC = 0.5;
+/** Starting path push speed (px/s). */
 export const PATH_SPEED = 20;
-/** Path push for the first {@link PATH_SPEED_INTRO_HOLD_SEC} seconds (px/s). */
-export const PATH_SPEED_INTRO = 100;
-/** Hold intro speed this long after match start. */
-export const PATH_SPEED_INTRO_HOLD_SEC = 2;
-/** Then ease from intro → cruise over this many seconds. */
-export const PATH_SPEED_INTRO_RAMP_SEC = 3;
+/** Cap for path push speed (px/s). */
+export const PATH_SPEED_MAX = 180;
+/** Path push acceleration each second of match time (px/s²). */
+export const PATH_SPEED_ACCEL_PER_SEC = 0.2;
 
-/** Path push speed at `elapsedSec` since match start (intro boost → cruise). */
+/** Path push speed at `elapsedSec` since match start (ramps up to max). */
 export function pathSpeedAt(elapsedSec: number): number {
   const t = Math.max(0, elapsedSec);
-  if (t <= PATH_SPEED_INTRO_HOLD_SEC) return PATH_SPEED_INTRO;
-  const u =
-    (t - PATH_SPEED_INTRO_HOLD_SEC) / Math.max(1e-6, PATH_SPEED_INTRO_RAMP_SEC);
-  if (u >= 1) return PATH_SPEED;
-  const s = u * u * (3 - 2 * u);
-  return PATH_SPEED_INTRO + (PATH_SPEED - PATH_SPEED_INTRO) * s;
+  return Math.min(
+    PATH_SPEED_MAX,
+    PATH_SPEED + PATH_SPEED_ACCEL_PER_SEC * t,
+  );
 }
 
 /** Max speed of floating segments rolling back toward the train. */

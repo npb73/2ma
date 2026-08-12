@@ -6,8 +6,6 @@ export class BallState extends Schema {
   @type("string") typeId: string = "solid_0";
   /** Distance along path in pixels from spawn. */
   @type("float32") dist: number = 0;
-  /** Lifetime / timer seconds remaining; <0 means inactive. Used by stones. */
-  @type("float32") fuse: number = -1;
 }
 
 export class ProjectileState extends Schema {
@@ -50,6 +48,8 @@ export class PlayerState extends Schema {
   @type("uint8") offerDebt: number = 0;
   /** Seconds of path freeze remaining (ice ball). */
   @type("float32") freezeSec: number = 0;
+  /** Seconds until the cannon can fire again. */
+  @type("float32") reloadSec: number = 0;
   /** Weighted chain spawn pool (each entry = equal spawn chance on the path). */
   @type(["string"]) ballPool = new ArraySchema<string>();
   /** Level-up offer: up to 3 ball type ids added to the spawn pool. */

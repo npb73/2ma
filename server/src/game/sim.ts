@@ -3,6 +3,7 @@ import {
   EXP_ORB_EXPIRE_SEC,
   EXP_ORB_VFX_CAP,
   EXP_PARTICLE_WAIT_SEC,
+  FIRE_RELOAD_SEC,
   GAP_EPS,
   ICE_FREEZE_SEC,
   INITIAL_CHAIN,
@@ -12,9 +13,7 @@ import {
   ROLLBACK_PAUSE_SEC,
   ROLLBACK_RAMP_SEC,
   ROLLBACK_SPEED,
-  STONE_TYPE_ID,
   TICK_HZ,
-  VOLUN_STONE_COUNT,
   cannonSolidPool,
   chainCapacityForPath,
   ChainTypeStream,
@@ -22,17 +21,15 @@ import {
   expParticleReadyDelaySec,
   expandMatchGroup,
   expToNextLevel,
-  firstProjectileHit,
   getRankedMap,
   initialBallPool,
   isBallTypeId,
-  isStone,
   mapCannon,
   mapPath,
   pickFromPool,
   resolveClearEffects,
   rollLevelOffer,
-  spawnStoneFuse,
+  segmentCircleHitT,
   type GameMap,
   type Point,
   type ProjectileHitTarget,
@@ -156,7 +153,6 @@ export class GameSim {
     ball.id = nanoid(8);
     ball.typeId = typeId;
     ball.dist = dist;
-    ball.fuse = spawnStoneFuse(typeId);
     return ball;
   }
 
@@ -181,6 +177,7 @@ export class GameSim {
       player.exp = 0;
       player.offerDebt = 0;
       player.freezeSec = 0;
+      player.reloadSec = 0;
       player.aim = player.seat === 0 ? 0 : Math.PI;
     }
     this.state.projectiles.clear();
@@ -203,6 +200,7 @@ export class GameSim {
     const p = this.state.players.get(sessionId);
     if (!p || this.state.phase !== "playing" || this.ended) return;
     if (offerOf(p).length > 0) return;
+    if (p.reloadSec > 0) return;
 
     const cannon = this.cannons[p.seat];
     const proj = new ProjectileState();
@@ -217,6 +215,7 @@ export class GameSim {
 
     p.currentType = p.nextType;
     p.nextType = this.nextCannonType();
+    p.reloadSec = FIRE_RELOAD_SEC;
   }
 
   pickBall(sessionId: string, typeId: string): void {
@@ -253,8 +252,8 @@ export class GameSim {
     if (this.state.phase !== "playing" || this.ended) return {};
 
     this.simTime += DT;
+    this.tickReloads();
     this.advanceChains();
-    this.tickStoneLifetimes();
     this.advanceProjectiles();
     this.tickExpiredExpOrbs();
 
@@ -274,36 +273,10 @@ export class GameSim {
     return {};
   }
 
-  /** Stones expire after STONE_LIFETIME_SEC (independent of freeze). */
-  private tickStoneLifetimes(): void {
+  private tickReloads(): void {
     for (const [, p] of this.state.players) {
-      const balls = this.copyBalls(p);
-      let anyStone = false;
-      for (const b of balls) {
-        if (!isStone(b.typeId) || b.fuse < 0) continue;
-        b.fuse -= DT;
-        anyStone = true;
-      }
-      if (!anyStone) continue;
-
-      const surviving = balls.filter((b) => {
-        if (!isStone(b.typeId)) return true;
-        return b.fuse > 0;
-      });
-      if (surviving.length !== balls.length) {
-        const expired = balls.filter(
-          (b) => isStone(b.typeId) && b.fuse <= 0,
-        );
-        const path = this.paths[p.seat];
-        const vfx: { x: number; y: number; typeId: string }[] = [];
-        for (const b of expired) {
-          const pos = pointAt(path, b.dist);
-          vfx.push({ x: pos.x, y: pos.y, typeId: b.typeId });
-        }
-        this.grantExp(p, expired.length);
-        this.spawnExpOrbVfxBatch(p, vfx);
-        this.writeBalls(p, surviving);
-        this.mergeContacts(this.copyBalls(p));
+      if (p.reloadSec > 0) {
+        p.reloadSec = Math.max(0, p.reloadSec - DT);
       }
     }
   }
@@ -523,43 +496,57 @@ export class GameSim {
 
     const built: [boolean, boolean] = [false, false];
     const removeAt: number[] = [];
-    const hits: { owner: PlayerState; dist: number; typeId: string }[] = [];
+    const hits: { chainOwner: PlayerState; dist: number; typeId: string }[] =
+      [];
 
     const projs = this.state.projectiles;
     for (let i = 0; i < projs.length; i++) {
       const proj = projs.at(i);
       if (!proj) continue;
 
-      const owner = this.state.players.get(proj.ownerSessionId);
-      if (!owner) {
+      if (!this.state.players.has(proj.ownerSessionId)) {
         this.markShotResolved(proj.id);
         removeAt.push(i);
         continue;
       }
-
-      const seat = owner.seat === 0 ? 0 : 1;
-      if (!built[seat]) {
-        this.rebuildProjTargets(owner);
-        built[seat] = true;
-      }
-      const targets = this.projTargets[seat];
 
       const x0 = proj.x;
       const y0 = proj.y;
       const x1 = x0 + proj.vx * DT;
       const y1 = y0 + proj.vy * DT;
 
-      const hit = firstProjectileHit(
-        x0,
-        y0,
-        x1,
-        y1,
-        targets,
-        PROJECTILE_HIT_RADIUS,
-      );
-      if (hit) {
+      // Earliest hit across both players' chains (crossfire allowed).
+      let bestT = Infinity;
+      let best: { chainOwner: PlayerState; dist: number } | null = null;
+      for (const [, chainOwner] of this.state.players) {
+        const seat = chainOwner.seat === 0 ? 0 : 1;
+        if (!built[seat]) {
+          this.rebuildProjTargets(chainOwner);
+          built[seat] = true;
+        }
+        for (const t of this.projTargets[seat]) {
+          const hitT = segmentCircleHitT(
+            x0,
+            y0,
+            x1,
+            y1,
+            t.x,
+            t.y,
+            PROJECTILE_HIT_RADIUS,
+          );
+          if (hitT === null || hitT >= bestT) continue;
+          bestT = hitT;
+          best = { chainOwner, dist: t.dist };
+        }
+      }
+
+      if (best) {
         this.markShotResolved(proj.id);
-        hits.push({ owner, dist: hit.dist, typeId: proj.typeId });
+        hits.push({
+          chainOwner: best.chainOwner,
+          dist: best.dist,
+          typeId: proj.typeId,
+        });
         removeAt.push(i);
         continue;
       }
@@ -578,7 +565,8 @@ export class GameSim {
     }
 
     for (const h of hits) {
-      this.insertAndMatch(h.owner, h.dist, h.typeId);
+      // Insert/clear/exp always belong to the chain that was hit.
+      this.insertAndMatch(h.chainOwner, h.dist, h.typeId);
     }
   }
 
@@ -590,11 +578,11 @@ export class GameSim {
   }
 
   private insertAndMatch(
-    shooter: PlayerState,
+    chainOwner: PlayerState,
     nearDist: number,
     typeId: string,
   ): void {
-    const balls = this.copyBalls(shooter);
+    const balls = this.copyBalls(chainOwner);
     if (balls.length === 0) return;
 
     let hitIdx = 0;
@@ -625,9 +613,9 @@ export class GameSim {
     const segsAfter = this.segmentRanges(balls);
     const packSeg = segsAfter.find(([s, e]) => idx >= s && idx <= e);
     if (packSeg) this.packFrom(balls, packSeg[0], packSeg[1]);
-    this.writeBalls(shooter, balls);
+    this.writeBalls(chainOwner, balls);
 
-    const chain = this.copyBalls(shooter);
+    const chain = this.copyBalls(chainOwner);
     const insertIdx = chain.findIndex((b) => b.id === insert.id);
     if (insertIdx < 0) return;
 
@@ -637,12 +625,13 @@ export class GameSim {
     const groupSize = right - left + 1;
 
     if (groupSize < 3) {
-      shooter.combo = 0;
+      chainOwner.combo = 0;
       return;
     }
 
-    this.commitClear(shooter, chain, typeIds, left, right);
-    shooter.combo += 1;
+    // Exp / level / freeze apply to the chain owner (even if shot by opponent).
+    this.commitClear(chainOwner, chain, typeIds, left, right);
+    chainOwner.combo += 1;
   }
 
   /** Apply special clear effects and remove balls. Returns count removed. */
@@ -673,9 +662,6 @@ export class GameSim {
 
     if (effects.freeze) {
       player.freezeSec = Math.max(player.freezeSec, ICE_FREEZE_SEC);
-    }
-    if (effects.volun) {
-      this.spawnVolunStones(player);
     }
     return removed;
   }
@@ -754,27 +740,6 @@ export class GameSim {
       }
     }
     return true;
-  }
-
-  /** Push stones onto the opponent's chain mouth (ranked). */
-  private spawnVolunStones(source: PlayerState): void {
-    let found: PlayerState | undefined;
-    this.state.players.forEach((p, id) => {
-      if (found) return;
-      if (id !== source.sessionId) found = p;
-    });
-    if (!found) return;
-    const target = found;
-
-    const balls = this.copyBalls(target);
-    const cap = chainCapacityForPath(this.paths[target.seat].total);
-    for (let i = 0; i < VOLUN_STONE_COUNT; i++) {
-      if (balls.length >= cap) break;
-      for (const b of balls) b.dist += DIAMETER;
-      balls.unshift(this.makeBall(STONE_TYPE_ID, 0));
-    }
-    this.packFrom(balls, 0);
-    this.writeBalls(target, balls);
   }
 
   private grantExp(player: PlayerState, cleared: number): void {

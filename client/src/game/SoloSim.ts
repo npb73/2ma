@@ -3,6 +3,7 @@ import {
   EXP_ORB_EXPIRE_SEC,
   EXP_ORB_VFX_CAP,
   EXP_PARTICLE_WAIT_SEC,
+  FIRE_RELOAD_SEC,
   GAP_EPS,
   ICE_FREEZE_SEC,
   INITIAL_CHAIN,
@@ -12,9 +13,7 @@ import {
   ROLLBACK_PAUSE_SEC,
   ROLLBACK_RAMP_SEC,
   ROLLBACK_SPEED,
-  STONE_TYPE_ID,
   TICK_HZ,
-  VOLUN_STONE_COUNT,
   buildPath,
   cannonSolidPool,
   chainCapacityForPath,
@@ -27,12 +26,10 @@ import {
   getSoloMap,
   initialBallPool,
   isBallTypeId,
-  isStone,
   pickFromPool,
   pointAtPathInto,
   resolveClearEffects,
   rollLevelOffer,
-  spawnStoneFuse,
   type GameMap,
   type PathGeom,
   type Point,
@@ -47,7 +44,6 @@ export interface SoloBall {
   id: string;
   typeId: string;
   dist: number;
-  fuse: number;
 }
 
 export interface SoloProjectile {
@@ -80,6 +76,7 @@ export interface SoloPlayer {
   exp: number;
   offerDebt: number;
   freezeSec: number;
+  reloadSec: number;
   ballPool: string[];
   pendingOffer: string[];
   chain: SoloBall[];
@@ -155,6 +152,7 @@ export class SoloSim {
       exp: 0,
       offerDebt: 0,
       freezeSec: 0,
+      reloadSec: 0,
       ballPool: initialBallPool(),
       pendingOffer: [],
       chain: [],
@@ -173,7 +171,6 @@ export class SoloSim {
         id: nid(),
         typeId,
         dist: i * DIAMETER,
-        fuse: spawnStoneFuse(typeId),
       });
     }
     this.player.currentType = this.nextCannonType();
@@ -183,6 +180,7 @@ export class SoloSim {
     this.player.exp = 0;
     this.player.offerDebt = 0;
     this.player.freezeSec = 0;
+    this.player.reloadSec = 0;
     this.player.aim = 0;
     this.projectiles = [];
     this.expOrbs = [];
@@ -222,6 +220,7 @@ export class SoloSim {
   fire(clientShotId?: string): void {
     if (this.phase !== "playing") return;
     if (this.player.pendingOffer.length > 0) return;
+    if (this.player.reloadSec > 0) return;
 
     const p = this.player;
     this.projectiles.push({
@@ -236,6 +235,7 @@ export class SoloSim {
 
     p.currentType = p.nextType;
     p.nextType = this.nextCannonType();
+    p.reloadSec = FIRE_RELOAD_SEC;
   }
 
   pickBall(typeId: string): void {
@@ -252,7 +252,7 @@ export class SoloSim {
     return pickFromPool(this.cannonPool, () => Math.random());
   }
 
-  /** Current path push speed (intro curve, or debug override). */
+  /** Current path push speed (time ramp, or debug override). */
   get pathSpeed(): number {
     if (this.speedOverride != null) return this.speedOverride;
     return pathSpeedAt(this.simTime);
@@ -303,8 +303,10 @@ export class SoloSim {
   tick(): void {
     if (this.phase !== "playing") return;
     this.simTime += DT;
+    if (this.player.reloadSec > 0) {
+      this.player.reloadSec = Math.max(0, this.player.reloadSec - DT);
+    }
     this.advanceChain();
-    this.tickStoneLifetimes();
     this.advanceProjectiles();
     this.tickExpiredExpOrbs();
 
@@ -312,39 +314,6 @@ export class SoloSim {
     const balls = this.sortChainInPlace();
     if (balls[balls.length - 1].dist >= this.path.total - 1) {
       this.phase = "ended";
-    }
-  }
-
-  /** Stones expire after STONE_LIFETIME_SEC (independent of freeze). */
-  private tickStoneLifetimes(): void {
-    const balls = this.sortChainInPlace();
-    let anyStone = false;
-    for (const b of balls) {
-      if (!isStone(b.typeId) || b.fuse < 0) continue;
-      b.fuse -= DT;
-      anyStone = true;
-    }
-    if (!anyStone) return;
-
-    const surviving = balls.filter((b) => {
-      if (!isStone(b.typeId)) return true;
-      return b.fuse > 0;
-    });
-    if (surviving.length !== balls.length) {
-      const expired = balls.filter((b) => isStone(b.typeId) && b.fuse <= 0);
-      const vfx: { x: number; y: number; typeId: string }[] = [];
-      for (const b of expired) {
-        pointAtPathInto(this.path, b.dist, this.clearPos);
-        vfx.push({
-          x: this.clearPos.x,
-          y: this.clearPos.y,
-          typeId: b.typeId,
-        });
-      }
-      this.grantExp(expired.length);
-      this.spawnExpOrbVfxBatch(vfx);
-      this.player.chain = surviving;
-      this.mergeContacts(this.sortChainInPlace());
     }
   }
 
@@ -385,7 +354,6 @@ export class SoloSim {
         id: nid(),
         typeId,
         dist: 0,
-        fuse: spawnStoneFuse(typeId),
       });
       this.packFrom(balls, 0);
     }
@@ -577,7 +545,6 @@ export class SoloSim {
       id: nid(),
       typeId,
       dist: balls[hitIdx].dist + DIAMETER * 0.5,
-      fuse: spawnStoneFuse(typeId),
     };
     for (let i = hitIdx + 1; i <= segEnd; i++) {
       balls[i].dist += DIAMETER;
@@ -641,9 +608,6 @@ export class SoloSim {
     if (effects.freeze) {
       this.player.freezeSec = Math.max(this.player.freezeSec, ICE_FREEZE_SEC);
     }
-    if (effects.volun) {
-      this.spawnVolunStones();
-    }
     return removed;
   }
 
@@ -699,23 +663,6 @@ export class SoloSim {
     this.expOrbMeta.delete(orbId);
     this.expOrbs = this.expOrbs.filter((o) => o.id !== orbId);
     return true;
-  }
-
-  /** Solo: no opponent — stones land on the player's own chain. */
-  private spawnVolunStones(): void {
-    let balls = this.sortChainInPlace();
-    const cap = chainCapacityForPath(this.path.total);
-    for (let i = 0; i < VOLUN_STONE_COUNT; i++) {
-      if (balls.length >= cap) break;
-      for (const b of balls) b.dist += DIAMETER;
-      balls.unshift({
-        id: nid(),
-        typeId: STONE_TYPE_ID,
-        dist: 0,
-        fuse: spawnStoneFuse(STONE_TYPE_ID),
-      });
-    }
-    this.packFrom(balls, 0);
   }
 
   private grantExp(amount: number): void {

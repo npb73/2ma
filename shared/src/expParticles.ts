@@ -18,7 +18,7 @@ export const EXP_PARTICLE_RADIUS = 5;
  * collected it. Exp itself is granted on clear — orbs are visual-only.
  */
 export const EXP_ORB_EXPIRE_SEC = 2.5;
-/** Max synced exp-orb credits spawned per clear / stone-expire batch (VFX cap). */
+/** Max synced exp-orb credits spawned per clear batch (VFX cap). */
 export const EXP_ORB_VFX_CAP = 12;
 
 /** Random particle count for one destroyed ball (legacy helper). */

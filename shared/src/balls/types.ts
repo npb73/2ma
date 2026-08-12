@@ -15,14 +15,12 @@ export type BallKind =
   | "solid"
   | "plasma"
   | "explosive"
-  | "ice"
-  | "volun"
-  | "stone";
+  | "ice";
 
 export interface BallTypeDef {
   id: string;
   kind: BallKind;
-  /** Display / match colors (empty for stone / explosive uses "all"). */
+  /** Display / match colors (empty = wildcard, e.g. explosive). */
   colors: SolidColor[];
   title: string;
   description: string;
