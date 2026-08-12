@@ -26,6 +26,7 @@ import {
   isBallTypeId,
   mapCannon,
   mapPath,
+  parseRuneId,
   pickFromPool,
   resolveClearEffects,
   rollLevelOffer,
@@ -67,7 +68,7 @@ function poolOf(p: PlayerState): string[] {
     const id = p.ballPool.at(i);
     if (id) out.push(id);
   }
-  return out.length > 0 ? out : initialBallPool();
+  return out.length > 0 ? out : initialBallPool("neutral");
 }
 
 function setPool(p: PlayerState, ids: string[]): void {
@@ -160,7 +161,8 @@ export class GameSim {
     this.chainStreams[0].reset();
     this.chainStreams[1].reset();
     for (const [, player] of this.state.players) {
-      const startPool = initialBallPool();
+      const rune = parseRuneId(player.runeId) ?? "neutral";
+      const startPool = initialBallPool(rune);
       setPool(player, startPool);
       setOffer(player, []);
 
@@ -188,6 +190,20 @@ export class GameSim {
     this.simTime = 0;
     this.expOrbMeta.clear();
     this.floatMotion.clear();
+  }
+
+  /** Record a rune pick; returns true if the match can start (all players picked). */
+  pickRune(sessionId: string, raw: unknown): boolean {
+    if (this.state.phase !== "rune") return false;
+    const p = this.state.players.get(sessionId);
+    if (!p || p.runeId) return false;
+    const rune = parseRuneId(raw);
+    if (rune == null) return false;
+    p.runeId = rune === "neutral" ? "neutral" : String(rune);
+    for (const [, other] of this.state.players) {
+      if (!other.runeId) return false;
+    }
+    return true;
   }
 
   setAim(sessionId: string, angle: number): void {

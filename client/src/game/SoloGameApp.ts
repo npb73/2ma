@@ -3,7 +3,6 @@ import {
   FIRE_RELOAD_SEC,
   TICK_HZ,
   UI,
-  ballDisplayColors,
   expToNextLevel,
   getSoloMap,
   pointAtPathInto,
@@ -13,6 +12,7 @@ import Phaser from "phaser";
 import { mountExpBar, mountLevelUpUi } from "../ui/levelUp";
 import { mountGraphicsSettings } from "../ui/graphicsSettings";
 import { mountSoloDebug } from "../ui/soloDebug";
+import { mountRunePick, type RunePickHandle } from "../ui/runePick";
 import { AdaptiveQuality, setActiveWorldSize, syncGameToStage } from "./adaptiveQuality";
 import { DistInterpolator, type BallSample } from "./interpolation";
 import { ProjectilePresenter } from "./projectiles";
@@ -28,11 +28,15 @@ import {
 import {
   CannonRecoil,
   MUZZLE_BALL_R,
-  NEXT_BALL_R,
   cannonPose,
   drawCannonBody,
   drawReloadRing,
 } from "./cannonView";
+import {
+  preloadPlayerTexture,
+  preparePlayerTexture,
+  PlayerSpriteLayer,
+} from "./player";
 import { addMapBackground, drawMapHole, drawMapPath } from "./mapView";
 
 export async function startSoloGame(
@@ -65,8 +69,9 @@ export async function startSoloGame(
   levelPanel.style.cssText = `
     position:absolute; inset:0; display:none; pointer-events:none;
     align-items:center; justify-content:center; z-index:25;
-    background:rgba(3,7,16,.55);
   `;
+  const runeHost = document.createElement("div");
+  runeHost.style.cssText = `position:absolute; inset:0; z-index:28; pointer-events:none;`;
   const resultPanel = document.createElement("div");
   resultPanel.style.cssText = `
     position:absolute; left:50%; top:40%; transform:translate(-50%,-50%);
@@ -74,7 +79,7 @@ export async function startSoloGame(
     padding:28px 36px; border-radius:12px; border:1px solid ${UI.secondaryDark};
     z-index:30;
   `;
-  overlay.append(hud, levelPanel, resultPanel);
+  overlay.append(hud, levelPanel, runeHost, resultPanel);
 
   const host = document.createElement("div");
   host.style.cssText = `
@@ -101,6 +106,7 @@ export async function startSoloGame(
   let lastHudKey = "";
   let lastOfferKey = "";
   let disposeLevelUi: (() => void) | null = null;
+  let runeUi: RunePickHandle | null = null;
   let leaving = false;
   let tickAcc = 0;
   let lastFrameMs = performance.now();
@@ -145,6 +151,8 @@ export async function startSoloGame(
     hoverTip.dispose();
     stageRo.disconnect();
     disposeLevelUi?.();
+    runeUi?.dispose();
+    runeUi = null;
     setBallPipelineAllowed(true);
     if (game?.isRunning) game.destroy(true);
     opts.onExit();
@@ -163,6 +171,22 @@ export async function startSoloGame(
     graphicsUi.toggle();
   };
   window.addEventListener("keydown", onEscape);
+
+  const showRunePick = (): void => {
+    runeUi?.dispose();
+    runeHost.style.pointerEvents = "auto";
+    runeUi = mountRunePick(runeHost, {
+      onPick: (rune) => {
+        sim.pickRune(rune);
+        runeUi?.dispose();
+        runeUi = null;
+        runeHost.style.pointerEvents = "none";
+        runeHost.innerHTML = "";
+        lastHudKey = "";
+      },
+    });
+  };
+  showRunePick();
 
   game = new Phaser.Game({
     type: Phaser.AUTO,
@@ -184,21 +208,25 @@ export async function startSoloGame(
     scene: {
       preload(this: Phaser.Scene) {
         preloadBallTextures(this);
+        preloadPlayerTexture(this);
       },
       create(this: Phaser.Scene) {
         this.cameras.main.setZoom(worldZoom);
         this.cameras.main.centerOn(sim.map.width / 2, sim.map.height / 2);
 
         prepareBallTextures(this);
+        preparePlayerTexture(this);
         addMapBackground(this, sim.map);
         drawMapPath(this, sim.map.lanes[0].path);
         drawMapHole(this, sim.map.lanes[0].path);
 
         const balls = new BallPainter(this, 2);
         const projs = new BallPainter(this, 3);
-        const cannonBalls = new BallPainter(this, 4);
-        const cannonGfx = this.add.graphics().setDepth(4);
-        const expGfx = this.add.graphics().setDepth(5);
+        // Muzzle/next ammo under the player sprite.
+        const cannonBalls = new BallPainter(this, 3);
+        const cannonGfx = this.add.graphics().setDepth(3);
+        const playerSprite = new PlayerSpriteLayer(this, 4);
+        const expGfx = this.add.graphics().setDepth(6);
 
         this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
           if (leaving || graphicsUi.isOpen() || sim.phase !== "playing") return;
@@ -371,6 +399,7 @@ export async function startSoloGame(
                 disposeLevelUi = null;
                 levelPanel.style.display = "none";
                 tickAcc = 0;
+                showRunePick();
               });
             resultPanel
               .querySelector("#solo-lobby")
@@ -390,6 +419,7 @@ export async function startSoloGame(
           balls.begin();
           projs.begin();
           cannonBalls.begin();
+          playerSprite.begin();
 
           for (let i = 0; i < drawBalls.length; i++) {
             const b = drawBalls[i];
@@ -414,10 +444,10 @@ export async function startSoloGame(
             cannonGfx.clear();
           }
 
-          const barrel = ballDisplayColors(me.currentType)[0] ?? UI.cannon;
           const pose = redrawCannons
-            ? drawCannonBody(cannonGfx, cannon.x, cannon.y, aim, recoil, barrel)
+            ? drawCannonBody(cannonGfx, cannon.x, cannon.y, aim, recoil)
             : cannonPose(cannon.x, cannon.y, aim, recoil);
+          playerSprite.draw(sim.sessionId, pose.baseX, pose.baseY, aim);
           if (redrawCannons) {
             const ready =
               FIRE_RELOAD_SEC <= 0
@@ -432,13 +462,6 @@ export async function startSoloGame(
             pose.tipY,
             MUZZLE_BALL_R,
           );
-          cannonBalls.draw(
-            "next",
-            me.nextType,
-            pose.baseX - 28,
-            pose.baseY + 28,
-            NEXT_BALL_R,
-          );
 
           projectiles.forEach((id, typeId, x, y) => {
             projs.draw(id, typeId, x, y, BALL_RADIUS - 2);
@@ -449,6 +472,7 @@ export async function startSoloGame(
           balls.end();
           projs.end();
           cannonBalls.end();
+          playerSprite.end();
 
           const ptr = this.input.activePointer;
           hoverTip.update({

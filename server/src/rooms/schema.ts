@@ -50,6 +50,11 @@ export class PlayerState extends Schema {
   @type("float32") freezeSec: number = 0;
   /** Seconds until the cannon can fire again. */
   @type("float32") reloadSec: number = 0;
+  /**
+   * Starting rune id once chosen (`"0"`…`"4"` or `"neutral"`).
+   * Empty while in the rune-pick phase.
+   */
+  @type("string") runeId: string = "";
   /** Weighted chain spawn pool (each entry = equal spawn chance on the path). */
   @type(["string"]) ballPool = new ArraySchema<string>();
   /** Level-up offer: up to 3 ball type ids added to the spawn pool. */

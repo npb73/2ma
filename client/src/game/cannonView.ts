@@ -1,11 +1,13 @@
 import { UI } from "@2ma/shared";
 import Phaser from "phaser";
 
-export const BARREL_LEN = 40;
+import { PLAYER_DISPLAY_SIZE } from "./player/texture";
+
+/** Muzzle ball sits on the player sprite's outer edge (half-covered). */
+export const BARREL_LEN = PLAYER_DISPLAY_SIZE / 2;
 export const MUZZLE_BALL_R = 11;
-export const NEXT_BALL_R = 10;
-/** Outer radius of the cannon reload ring. */
-export const RELOAD_RING_R = 30;
+/** Reload ring sits under the sprite, slightly inside its outer edge. */
+export const RELOAD_RING_R = PLAYER_DISPLAY_SIZE / 2 - 4;
 
 const RECOIL_DIST = 8;
 const RECOIL_MS = 130;
@@ -86,20 +88,16 @@ export function cannonPose(
   };
 }
 
+/** Pose only — player body is the sprite; no barrel graphics. */
 export function drawCannonBody(
-  g: Phaser.GameObjects.Graphics,
+  _g: Phaser.GameObjects.Graphics,
   cx: number,
   cy: number,
   aim: number,
   recoil: { x: number; y: number },
-  barrelColor: string = UI.cannon,
+  _barrelColor?: string,
 ): CannonPose {
-  const pose = cannonPose(cx, cy, aim, recoil);
-  g.fillStyle(hex(UI.cannon), 1);
-  g.fillCircle(pose.baseX, pose.baseY, 22);
-  g.lineStyle(5, hex(barrelColor), 1);
-  g.lineBetween(pose.baseX, pose.baseY, pose.tipX, pose.tipY);
-  return pose;
+  return cannonPose(cx, cy, aim, recoil);
 }
 
 /**

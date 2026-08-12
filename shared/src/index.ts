@@ -59,6 +59,9 @@ export {
   getBallType,
   isBallTypeId,
   initialBallPool,
+  isRuneId,
+  parseRuneId,
+  RUNES,
   cannonSolidPool,
   matchColors,
   typesMatch,
@@ -79,6 +82,8 @@ export {
   type BallKind,
   type BallTypeDef,
   type ClearResolution,
+  type RuneId,
+  type RuneDef,
 } from "./balls/index.js";
 
 export const RATING_DELTA = 30;
@@ -221,11 +226,12 @@ export {
 
 export { mulberry32, createColorStream, randomSeed } from "./rng.js";
 
-export type RoomPhase = "lobby" | "playing" | "ended";
+export type RoomPhase = "lobby" | "rune" | "playing" | "ended";
 
 export const MESSAGES = {
   aim: "aim",
   fire: "fire",
   pickBall: "pickBall",
+  pickRune: "pickRune",
   ready: "ready",
 } as const;

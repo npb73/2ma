@@ -20,9 +20,14 @@ export {
   ChainTypeStream,
   cannonSolidPool,
   initialBallPool,
+  isRuneId,
+  parseRuneId,
+  RUNES,
   pickChainRunLength,
   pickFromPool,
   rollLevelOffer,
+  type RuneId,
+  type RuneDef,
 } from "./pools.js";
 export { ballDisplayColors } from "./display.js";
 export { solidTypeId, solidId } from "./solid/index.js";

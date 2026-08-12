@@ -3,7 +3,6 @@ import {
   DEFAULT_RANKED_MAP_ID,
   FIRE_RELOAD_SEC,
   UI,
-  ballDisplayColors,
   buildPath,
   expToNextLevel,
   getRankedMap,
@@ -18,19 +17,8 @@ import type { PlayMode } from "../ui/lobby";
 import type { UserInfo } from "../auth";
 import { mountExpBar, mountLevelUpUi } from "../ui/levelUp";
 import { mountGraphicsSettings } from "../ui/graphicsSettings";
+import { mountRunePick, type RunePickHandle } from "../ui/runePick";
 import { AdaptiveQuality, setActiveWorldSize, syncGameToStage } from "./adaptiveQuality";
-import {
-  CannonRecoil,
-  LocalReload,
-  MUZZLE_BALL_R,
-  NEXT_BALL_R,
-  cannonPose,
-  drawCannonBody,
-  drawReloadRing,
-} from "./cannonView";
-import { DistInterpolator, type BallSample } from "./interpolation";
-import { ProjectilePresenter } from "./projectiles";
-import { ExpOrbPresenter } from "./expOrbs";
 import {
   BallPainter,
   BallHoverTip,
@@ -38,7 +26,23 @@ import {
   prepareBallTextures,
   setBallPipelineAllowed,
 } from "./balls";
+import {
+  preloadPlayerTexture,
+  preparePlayerTexture,
+  PlayerSpriteLayer,
+} from "./player";
 import { addMapBackground, drawMapHole, drawMapPath } from "./mapView";
+import { DistInterpolator, type BallSample } from "./interpolation";
+import { ProjectilePresenter } from "./projectiles";
+import { ExpOrbPresenter } from "./expOrbs";
+import {
+  CannonRecoil,
+  LocalReload,
+  MUZZLE_BALL_R,
+  cannonPose,
+  drawCannonBody,
+  drawReloadRing,
+} from "./cannonView";
 
 const WS_URL =
   (import.meta.env.VITE_WS_URL as string | undefined) ||
@@ -73,6 +77,7 @@ interface PlayerView {
   level: number;
   exp: number;
   reloadSec: number;
+  runeId: string;
   ballPool: string[];
   pendingOffer: string[];
   chain: BallView[];
@@ -166,6 +171,7 @@ function readState(room: Room): GameView {
       level: Number(p.level ?? 0),
       exp: Number(p.exp ?? 0),
       reloadSec: Number(p.reloadSec ?? 0),
+      runeId: String(p.runeId ?? ""),
       ballPool: asArray<string>(p.ballPool).map(String),
       pendingOffer: asArray<string>(p.pendingOffer).map(String),
       chain,
@@ -280,7 +286,8 @@ function waitForOpponent(
     const check = () => {
       syncDetail();
       const phase = String((room.state as { phase?: string }).phase ?? "");
-      if (phase === "playing" || phase === "ended") finish(false);
+      if (phase === "playing" || phase === "ended" || phase === "rune")
+        finish(false);
     };
 
     room.onStateChange(() => check());
@@ -372,8 +379,12 @@ export async function startGame(
     });
   }
 
-  // Stay on matchmaking screen until both players are in and the match starts.
-  if (String(room.state.phase) !== "playing" && String(room.state.phase) !== "ended") {
+  // Stay on matchmaking screen until both players are in (rune pick or later).
+  if (
+    String(room.state.phase) !== "playing" &&
+    String(room.state.phase) !== "ended" &&
+    String(room.state.phase) !== "rune"
+  ) {
     const { cancelled } = await waitForOpponent(root, room, opts.mode);
     if (cancelled) {
       try {
@@ -422,9 +433,10 @@ export async function startGame(
   levelPanel.style.cssText = `
     position:absolute; inset:0; display:none; pointer-events:none;
     align-items:center; justify-content:center; z-index:25;
-    background:rgba(3,7,16,.55);
   `;
-  overlay.append(hud, levelPanel);
+  const runeHost = document.createElement("div");
+  runeHost.style.cssText = `position:absolute; inset:0; z-index:28; pointer-events:none;`;
+  overlay.append(hud, levelPanel, runeHost);
 
   const host = document.createElement("div");
   host.style.cssText = `
@@ -449,6 +461,8 @@ export async function startGame(
 
   let lastOfferKey = "";
   let disposeLevelUi: (() => void) | null = null;
+  let runeUi: RunePickHandle | null = null;
+  let runePickedLocal = false;
   let lastHudKey = "";
   let lastAimSent = 0;
   let localAim: number | null = null;
@@ -537,6 +551,8 @@ export async function startGame(
     hoverTip.dispose();
     stageRo.disconnect();
     disposeLevelUi?.();
+    runeUi?.dispose();
+    runeUi = null;
     setBallPipelineAllowed(true);
     void (async () => {
       await cleanupMatch(room, game);
@@ -568,12 +584,14 @@ export async function startGame(
     scene: {
       preload(this: Phaser.Scene) {
         preloadBallTextures(this);
+        preloadPlayerTexture(this);
       },
       create(this: Phaser.Scene) {
         this.cameras.main.setZoom(worldZoom);
         this.cameras.main.centerOn(map.width / 2, map.height / 2);
 
         prepareBallTextures(this);
+        preparePlayerTexture(this);
         addMapBackground(this, map);
         drawMapPath(this, pathA.points);
         drawMapPath(this, pathB.points);
@@ -582,9 +600,11 @@ export async function startGame(
 
         const balls = new BallPainter(this, 2);
         const projs = new BallPainter(this, 3);
-        const cannonBalls = new BallPainter(this, 4);
-        const cannonGfx = this.add.graphics().setDepth(4);
-        const expGfx = this.add.graphics().setDepth(5);
+        // Muzzle ammo + reload ring under the player sprite.
+        const cannonBalls = new BallPainter(this, 3);
+        const cannonGfx = this.add.graphics().setDepth(3);
+        const playerSprites = new PlayerSpriteLayer(this, 4);
+        const expGfx = this.add.graphics().setDepth(6);
 
         this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
           if (leaving || graphicsUi.isOpen() || room.state.phase !== "playing")
@@ -715,6 +735,34 @@ export async function startGame(
           }
           projectiles.step(dtMs / 1000, ballsByOwner);
 
+          // Rune pick phase: show chooser until both players have selected.
+          if (view.phase === "rune") {
+            const self = view.players.get(room.sessionId);
+            const already = Boolean(self?.runeId) || runePickedLocal;
+            if (!runeUi) {
+              runeHost.style.pointerEvents = "auto";
+              runeUi = mountRunePick(runeHost, {
+                onPick: (rune) => {
+                  runePickedLocal = true;
+                  room.send("pickRune", {
+                    runeId: rune === "neutral" ? "neutral" : rune,
+                  });
+                  runeUi?.setLocked(true);
+                  runeUi?.setStatus("Ждём соперника…");
+                },
+              });
+            }
+            if (already) {
+              runeUi.setLocked(true);
+              runeUi.setStatus("Ждём соперника…");
+            }
+          } else if (runeUi) {
+            runeUi.dispose();
+            runeUi = null;
+            runeHost.style.pointerEvents = "none";
+            runeHost.innerHTML = "";
+          }
+
           renderHud(hud, view, room.sessionId, map.name, lastHudKey, (key) => {
             lastHudKey = key;
           });
@@ -763,6 +811,7 @@ export async function startGame(
           balls.begin();
           projs.begin();
           cannonBalls.begin();
+          playerSprites.begin();
 
           for (let i = 0; i < drawBalls.length; i++) {
             const b = drawBalls[i];
@@ -809,7 +858,6 @@ export async function startGame(
             const isMe = p.sessionId === room.sessionId;
             const aim = isMe && localAim !== null ? localAim : p.aim;
             const recoil = cannonRecoil.offset(p.sessionId, aim, now);
-            const barrel = ballDisplayColors(p.currentType)[0] ?? UI.cannon;
             const pose = redrawCannons
               ? drawCannonBody(
                   cannonGfx,
@@ -817,9 +865,9 @@ export async function startGame(
                   cannon.y,
                   aim,
                   recoil,
-                  barrel,
                 )
               : cannonPose(cannon.x, cannon.y, aim, recoil);
+            playerSprites.draw(p.sessionId, pose.baseX, pose.baseY, aim);
             if (redrawCannons) {
               const reloadSec = isMe
                 ? Math.max(p.reloadSec, localReload.remainingSec(now))
@@ -837,13 +885,6 @@ export async function startGame(
               pose.tipY,
               MUZZLE_BALL_R,
             );
-            cannonBalls.draw(
-              `next_${p.sessionId}`,
-              p.nextType,
-              pose.baseX - 28,
-              pose.baseY + 28,
-              NEXT_BALL_R,
-            );
           }
 
           projectiles.forEach((id, typeId, x, y) => {
@@ -855,6 +896,7 @@ export async function startGame(
           balls.end();
           projs.end();
           cannonBalls.end();
+          playerSprites.end();
 
           const ptr = this.input.activePointer;
           hoverTip.update({

@@ -34,6 +34,7 @@ import {
   type PathGeom,
   type Point,
   type ProjectileHitTarget,
+  type RuneId,
 } from "@2ma/shared";
 
 const DT = 1 / TICK_HZ;
@@ -83,7 +84,7 @@ export interface SoloPlayer {
 }
 
 export interface SoloSnapshot {
-  phase: "playing" | "ended";
+  phase: "rune" | "playing" | "ended";
   players: SoloPlayer[];
   projectiles: SoloProjectile[];
   expOrbs: SoloExpOrb[];
@@ -118,7 +119,7 @@ export class SoloSim {
   readonly cannon: Point;
   readonly sessionId = "solo";
 
-  phase: "playing" | "ended" = "playing";
+  phase: "rune" | "playing" | "ended" = "rune";
   score = 0;
   player: SoloPlayer;
   projectiles: SoloProjectile[] = [];
@@ -153,7 +154,7 @@ export class SoloSim {
       offerDebt: 0,
       freezeSec: 0,
       reloadSec: 0,
-      ballPool: initialBallPool(),
+      ballPool: [],
       pendingOffer: [],
       chain: [],
     };
@@ -162,17 +163,9 @@ export class SoloSim {
 
   reset(): void {
     this.chainStream.reset();
-    this.player.ballPool = initialBallPool();
+    this.player.ballPool = [];
     this.player.pendingOffer = [];
     this.player.chain = [];
-    for (let i = 0; i < INITIAL_CHAIN; i++) {
-      const typeId = this.nextChainType();
-      this.player.chain.push({
-        id: nid(),
-        typeId,
-        dist: i * DIAMETER,
-      });
-    }
     this.player.currentType = this.nextCannonType();
     this.player.nextType = this.nextCannonType();
     this.player.combo = 0;
@@ -189,8 +182,29 @@ export class SoloSim {
     this.simTime = 0;
     this.expOrbMeta.clear();
     this.floatMotion.clear();
-    this.phase = "playing";
+    this.phase = "rune";
     this.score = 0;
+  }
+
+  /** Apply starting rune and spawn the initial chain (ends rune phase). */
+  pickRune(rune: RuneId): void {
+    if (this.phase !== "rune") return;
+    this.chainStream.reset();
+    this.player.ballPool = initialBallPool(rune);
+    this.player.chain = [];
+    for (let i = 0; i < INITIAL_CHAIN; i++) {
+      const typeId = this.nextChainType();
+      this.player.chain.push({
+        id: nid(),
+        typeId,
+        dist: i * DIAMETER,
+      });
+    }
+    this.player.currentType = this.nextCannonType();
+    this.player.nextType = this.nextCannonType();
+    this.spawnAcc = 0;
+    this.simTime = 0;
+    this.phase = "playing";
   }
 
   snapshot(): SoloSnapshot {
@@ -285,7 +299,7 @@ export class SoloSim {
     const pool =
       this.player.ballPool.length > 0
         ? this.player.ballPool
-        : initialBallPool();
+        : initialBallPool("neutral");
     return this.chainStream.next(pool, () => Math.random());
   }
 

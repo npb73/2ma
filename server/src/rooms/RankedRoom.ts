@@ -74,6 +74,13 @@ export class RankedRoom extends Room<RankedState> {
       }
     });
 
+    this.onMessage("pickRune", (client, message: { runeId?: unknown }) => {
+      if (this.state.phase !== "rune") return;
+      if (this.sim.pickRune(client.sessionId, message?.runeId)) {
+        this.beginPlaying();
+      }
+    });
+
     this.onMessage("collectExp", (client, message: { id?: string }) => {
       if (typeof message?.id === "string") {
         this.sim.collectExp(client.sessionId, message.id);
@@ -151,8 +158,14 @@ export class RankedRoom extends Room<RankedState> {
     const allReady = [...this.state.players.values()].every((p) => p.ready);
     if (!allReady) return;
 
-    this.state.phase = "playing";
+    for (const [, p] of this.state.players) p.runeId = "";
+    this.state.phase = "rune";
+  }
+
+  private beginPlaying(): void {
+    if (this.state.phase !== "rune") return;
     this.sim.initChains();
+    this.state.phase = "playing";
     this.setSimulationInterval(() => this.step(), 1000 / TICK_HZ);
   }
 

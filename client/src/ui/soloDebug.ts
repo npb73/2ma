@@ -172,6 +172,7 @@ export function mountSoloDebug(host: HTMLElement, sim: SoloSim): SoloDebugHandle
     const lengths = sim.getRunLengths();
     const lockedSpeed = speedLocked ? Number(speedInput.value) : null;
     sim.reset();
+    sim.pickRune("neutral");
     sim.setRunLengths(lengths);
     if (lockedSpeed != null) sim.setPathSpeed(lockedSpeed);
     else sim.setPathSpeed(null);

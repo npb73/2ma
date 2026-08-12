@@ -1,5 +1,75 @@
 import { UI, getBallType, type BallTypeDef } from "@2ma/shared";
 import { ballSwatch } from "../game/balls";
+import { mountUpgradeBackdrop } from "./upgradeBackdrop";
+
+const LEVEL_UP_STYLE_ID = "level-up-appear-style";
+
+function ensureLevelUpStyles(): void {
+  if (document.getElementById(LEVEL_UP_STYLE_ID)) return;
+  const style = document.createElement("style");
+  style.id = LEVEL_UP_STYLE_ID;
+  style.textContent = `
+    @keyframes level-up-panel-in {
+      0% {
+        opacity: 0;
+        transform: translateY(18px) scale(0.92);
+        filter: blur(4px);
+      }
+      60% {
+        opacity: 1;
+        filter: blur(0);
+      }
+      100% {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+        filter: blur(0);
+      }
+    }
+    @keyframes level-up-card-in {
+      0% {
+        opacity: 0;
+        transform: translateY(28px) scale(0.7) rotate(-4deg);
+      }
+      55% {
+        opacity: 1;
+        transform: translateY(-6px) scale(1.04) rotate(1deg);
+      }
+      100% {
+        opacity: 1;
+        transform: translateY(0) scale(1) rotate(0deg);
+      }
+    }
+    @keyframes level-up-chip-in {
+      0% {
+        opacity: 0;
+        transform: scale(0.5);
+      }
+      100% {
+        opacity: 1;
+        transform: scale(1);
+      }
+    }
+    @keyframes level-up-title-in {
+      0% { opacity: 0; letter-spacing: 0.28em; transform: translateY(-8px); }
+      100% { opacity: 1; letter-spacing: 0.04em; transform: translateY(0); }
+    }
+    .level-up-panel {
+      animation: level-up-panel-in 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+    .level-up-title {
+      animation: level-up-title-in 0.5s ease-out 0.08s both;
+    }
+    .level-up-chip {
+      opacity: 0;
+      animation: level-up-chip-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+    .level-up-card {
+      opacity: 0;
+      animation: level-up-card-in 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+  `;
+  document.head.append(style);
+}
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -83,11 +153,19 @@ export function mountLevelUpUi(
     onPick: (typeId: string) => void;
   },
 ): () => void {
+  ensureLevelUpStyles();
   host.innerHTML = "";
   host.style.display = "flex";
   host.style.pointerEvents = "auto";
+  host.style.position = "absolute";
+  host.style.background = "transparent";
+  host.style.overflow = "hidden";
+
+  const disposeFx = mountUpgradeBackdrop(host);
 
   const panel = el("div", {
+    position: "relative",
+    zIndex: "1",
     width: "min(920px, 96%)",
     maxHeight: "90%",
     overflowY: "auto",
@@ -99,20 +177,22 @@ export function mountLevelUpUi(
     display: "flex",
     flexDirection: "column",
     gap: "16px",
+    boxShadow: "0 16px 48px rgba(0,0,0,.45)",
   });
+  panel.className = "level-up-panel";
 
-  panel.append(
-    el(
-      "div",
-      {
-        fontSize: "13px",
-        color: UI.accentHot,
-        fontWeight: "700",
-        letterSpacing: "0.04em",
-      },
-      "НОВЫЙ УРОВЕНЬ",
-    ),
+  const title = el(
+    "div",
+    {
+      fontSize: "13px",
+      color: UI.accentHot,
+      fontWeight: "700",
+      letterSpacing: "0.04em",
+    },
+    "ВЫБОР УЛУЧШЕНИЯ",
   );
+  title.className = "level-up-title";
+  panel.append(title);
 
   panel.append(
     el(
@@ -142,7 +222,7 @@ export function mountLevelUpUi(
     poolCounts.set(id, (poolCounts.get(id) ?? 0) + 1);
   }
 
-  for (const id of poolOrder) {
+  poolOrder.forEach((id, chipIdx) => {
     const count = poolCounts.get(id) ?? 1;
     const chip = el("div", {
       display: "flex",
@@ -155,6 +235,8 @@ export function mountLevelUpUi(
       border: `1px solid ${UI.secondaryDark}`,
       minWidth: "64px",
     });
+    chip.className = "level-up-chip";
+    chip.style.animationDelay = `${0.12 + chipIdx * 0.04}s`;
 
     const stackWrap = el("div", {
       position: "relative",
@@ -209,7 +291,7 @@ export function mountLevelUpUi(
       ),
     );
     poolRow.append(chip);
-  }
+  });
   panel.append(poolRow);
 
   panel.append(
@@ -231,22 +313,25 @@ export function mountLevelUpUi(
     gap: "12px",
     justifyContent: "center",
   });
-  for (const id of opts.offer) {
-    offerRow.append(
-      typeCard(id, {
-        selectable: true,
-        onPick: () => opts.onPick(id),
-      }),
-    );
-  }
+  opts.offer.forEach((id, i) => {
+    const card = typeCard(id, {
+      selectable: true,
+      onPick: () => opts.onPick(id),
+    });
+    card.className = "level-up-card";
+    card.style.animationDelay = `${0.28 + i * 0.1}s`;
+    offerRow.append(card);
+  });
   panel.append(offerRow);
 
   host.append(panel);
 
   return () => {
+    disposeFx();
     host.innerHTML = "";
     host.style.display = "none";
     host.style.pointerEvents = "none";
+    host.style.background = "";
   };
 }
 
